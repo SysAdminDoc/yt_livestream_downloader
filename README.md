@@ -37,6 +37,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Crash Resume** | Persists the next segment and offers to resume an interrupted recording when the same URL and folder are opened again |
 | **Integrity Manifest** | Writes an atomic `.yt_livestream_manifest.json` with each segment's size, SHA-256 checksum, quality, and partial status |
 | **Native DASH Capture** | Optional yt-dlp native fragment mode for DASH streams; automatically falls back to ffmpeg when a provider exposes an unsupported HLS live stream |
+| **Super Chat Chapters** | Optional Audio Only mode captures YouTube live-chat paid messages, keeps the JSON sidecar, and embeds them as chapters in `.m4a` segments |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -86,9 +87,10 @@ Without a JS runtime, yt-dlp may display a warning and some formats could be una
 2. **Paste** a YouTube livestream URL
 3. **(Optional)** Click **Fetch Info** to verify the stream is live
 4. **Configure** segment length, quality, and output folder as needed
-5. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
-6. Click **Stop** at any time — the current partial segment is saved
-7. **Double-click** any segment in the list to play it
+5. For **Audio Only**, optionally enable **Super Chat chapters** to retain paid-message timestamps as embedded chapters
+6. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
+7. Click **Stop** at any time — the current partial segment is saved
+8. **Double-click** any segment in the list to play it
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 
@@ -106,7 +108,7 @@ Stream_Title_seg002_20260208_233333.mp4
 Stream_Title_seg003_20260209_000333.mp4
 ```
 
-The output folder also contains a crash-resume state file and an atomic `.yt_livestream_manifest.json` checksum manifest. The manifest is updated after each finalized segment, including user-stopped partial captures.
+The output folder also contains a crash-resume state file and an atomic `.yt_livestream_manifest.json` checksum manifest. The manifest is updated after each finalized segment, including user-stopped partial captures. When Super Chat chapters are enabled, the raw live-chat capture remains beside the audio segments as `<stream>.live_chat.json`.
 
 ## How It Works
 
@@ -130,7 +132,7 @@ The output folder also contains a crash-resume state file and an atomic `.yt_liv
                                                     └─────────┘
 ```
 
-Each segment launches a fresh yt-dlp process with `--downloader ffmpeg` and `--downloader-args "ffmpeg:-t <seconds>"`. When ffmpeg's time limit is reached, the process exits, the file is saved, and the next segment begins immediately from the live edge. There is a brief gap (2-5 seconds) between segments while the new process initializes.
+Each segment launches a fresh yt-dlp process with `--downloader ffmpeg` and `--downloader-args "ffmpeg:-t <seconds>"`. The next writer is pre-armed before the boundary, and its overlap prefix is stream-copy trimmed so finalized segments stay contiguous while preserving independent files. Native DASH mode uses yt-dlp's fragment downloader and falls back to the same ffmpeg path when native capture cannot handle the stream.
 
 Auto-retry handles transient network failures. After 3 consecutive segment failures, the app assumes the stream has ended and stops.
 
@@ -143,7 +145,7 @@ Settings are persisted to:
 | Windows | `%APPDATA%\YTLivestreamDL\config.json` |
 | macOS/Linux | `~/YTLivestreamDL/config.json` |
 
-Saved fields: output directory, segment length, quality preset, retry count, last URL.
+Saved fields: output directory, segment length, quality preset, retry count, native fragment preference, Super Chat chapter preference, last URL.
 
 ## Troubleshooting
 
@@ -155,7 +157,8 @@ Saved fields: output directory, segment length, quality preset, retry count, las
 | `Requested format is not available` | Change quality from a specific resolution to "Best" — livestreams have limited format options. |
 | JS runtime warning | Install deno (see Prerequisites). Not strictly required but recommended. |
 | Segments are empty / 0 bytes | The stream may have ended, or the URL is not a live stream. Use **Fetch Info** to check. |
-| Gaps between segments | Expected (2-5s). Each segment is an independent download from the live edge. |
+| Gaps between segments | The recorder pre-arms the next writer and trims its overlap prefix. If a provider still exposes a discontinuity, check the activity log for retry or fallback messages. |
+| Super Chat chapters are missing | Chapters require **Audio Only**, a live-chat stream exposed by YouTube, and ffmpeg. The `.live_chat.json` sidecar is retained so the capture can be inspected independently. |
 | App freezes on close | The app waits up to 5 seconds for the current download to terminate. If it persists, force-close. |
 
 ## License

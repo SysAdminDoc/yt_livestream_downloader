@@ -137,6 +137,225 @@ def build_trim_command(
     ]
 
 
+def build_live_chat_command(
+    ytdlp_cmd: Sequence[str],
+    url: str,
+    output_template: str | os.PathLike[str],
+) -> list[str]:
+    """Build a sidecar capture command for YouTube's live-chat subtitle stream."""
+
+    return [
+        *ytdlp_cmd,
+        "--skip-download",
+        "--write-subs",
+        "--sub-langs",
+        "live_chat",
+        "--sub-format",
+        "json",
+        "--no-part",
+        "--force-overwrites",
+        "-o",
+        os.fspath(output_template),
+        url,
+    ]
+
+
+def _text_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        if isinstance(value.get("simpleText"), str):
+            return value["simpleText"]
+        if isinstance(value.get("text"), str):
+            return value["text"]
+        runs = value.get("runs")
+        if isinstance(runs, list):
+            return "".join(_text_value(run) for run in runs).strip()
+    if isinstance(value, list):
+        return "".join(_text_value(item) for item in value).strip()
+    return ""
+
+
+def _walk_mappings(value: Any) -> Iterable[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        yield value
+        for child in value.values():
+            yield from _walk_mappings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_mappings(child)
+
+
+def _first_offset_ms(value: Any) -> int | None:
+    for mapping in _walk_mappings(value):
+        for key in ("videoOffsetTimeMsec", "offsetMs", "videoOffsetMs"):
+            raw = mapping.get(key)
+            if raw is not None:
+                try:
+                    return max(0, int(float(raw)))
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
+def _json_records(source: Any) -> Iterable[Mapping[str, Any]]:
+    if isinstance(source, (str, os.PathLike)):
+        with open(source, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(value, Mapping):
+                        yield value
+        return
+    if isinstance(source, Mapping):
+        records = source.get("events")
+        if isinstance(records, list):
+            yield from (item for item in records if isinstance(item, Mapping))
+        else:
+            yield source
+        return
+    if isinstance(source, list):
+        yield from (item for item in source if isinstance(item, Mapping))
+
+
+def parse_superchat_events(source: Any) -> list[dict[str, Any]]:
+    """Extract paid live-chat messages as relative millisecond chapter events."""
+
+    renderer_keys = {
+        "liveChatPaidMessageRenderer",
+        "liveChatPaidStickerRenderer",
+        "liveChatTickerPaidMessageItemRenderer",
+    }
+    events: list[dict[str, Any]] = []
+    seen: set[tuple[int, str, str]] = set()
+    for record in _json_records(source):
+        offset_ms = _first_offset_ms(record)
+        if offset_ms is None:
+            continue
+        for mapping in _walk_mappings(record):
+            for key in renderer_keys.intersection(mapping):
+                renderer = mapping.get(key)
+                if not isinstance(renderer, Mapping):
+                    continue
+                amount = _text_value(
+                    renderer.get("purchaseAmountText")
+                    or renderer.get("amount")
+                    or renderer.get("purchaseAmount")
+                )
+                author = _text_value(renderer.get("authorName") or renderer.get("author"))
+                message = _text_value(renderer.get("message") or renderer.get("headerSubtext"))
+                title = "Super Chat"
+                if amount:
+                    title = f"Super Chat {amount}"
+                if author:
+                    title = f"{title} — {author}"
+                identity = (offset_ms, title, message)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                events.append(
+                    {
+                        "offset_ms": offset_ms,
+                        "title": title,
+                        "message": message,
+                        "amount": amount,
+                        "author": author,
+                    }
+                )
+    return sorted(events, key=lambda event: (event["offset_ms"], event["title"]))
+
+
+def chapter_events_for_segment(
+    events: Iterable[Mapping[str, Any]],
+    segment_number: int,
+    segment_seconds: int,
+    *,
+    first_segment_number: int = 1,
+) -> list[dict[str, Any]]:
+    """Translate stream-relative chat events into one segment's timeline."""
+
+    segment_start_ms = max(0, segment_number - first_segment_number) * int(segment_seconds) * 1000
+    segment_end_ms = segment_start_ms + int(segment_seconds) * 1000
+    selected = []
+    for event in events:
+        try:
+            offset_ms = int(event["offset_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if segment_start_ms <= offset_ms < segment_end_ms:
+            selected.append(
+                {
+                    "start_ms": offset_ms - segment_start_ms,
+                    "title": str(event.get("title") or "Super Chat"),
+                    "message": str(event.get("message") or ""),
+                }
+            )
+    return selected
+
+
+def _escape_ffmetadata(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace("=", "\\=").replace(";", "\\;").replace("#", "\\#").replace("\n", " ")
+
+
+def format_ffmetadata_chapters(events: Iterable[Mapping[str, Any]], duration_seconds: int) -> str:
+    """Format chapter events in ffmetadata's millisecond timebase."""
+
+    normalized = sorted(
+        (
+            max(0, int(event.get("start_ms", 0))),
+            _escape_ffmetadata(str(event.get("title") or "Super Chat")),
+            _escape_ffmetadata(str(event.get("message") or "")),
+        )
+        for event in events
+    )
+    lines = [";FFMETADATA1"]
+    for index, (start_ms, title, message) in enumerate(normalized):
+        end_ms = normalized[index + 1][0] if index + 1 < len(normalized) else max(start_ms + 1, int(duration_seconds * 1000))
+        end_ms = max(start_ms + 1, min(end_ms, int(duration_seconds * 1000)))
+        lines.extend(
+            [
+                "[CHAPTER]",
+                "TIMEBASE=1/1000",
+                f"START={start_ms}",
+                f"END={end_ms}",
+                f"title={title}",
+            ]
+        )
+        if message:
+            lines.append(f"comment={message}")
+    return "\n".join(lines) + "\n"
+
+
+def build_embed_chapters_command(
+    ffmpeg_path: str,
+    media_path: str | os.PathLike[str],
+    metadata_path: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+) -> list[str]:
+    return [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        os.fspath(media_path),
+        "-i",
+        os.fspath(metadata_path),
+        "-map",
+        "0:a:0",
+        "-map_metadata",
+        "1",
+        "-c:a",
+        "copy",
+        os.fspath(output_path),
+    ]
+
+
 def atomic_write_json(path: str | os.PathLike[str], payload: Mapping[str, Any]) -> None:
     """Atomically replace a JSON file, including when interrupted mid-write."""
 

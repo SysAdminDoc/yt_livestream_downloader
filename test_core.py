@@ -7,8 +7,13 @@ from yt_livestream_core import (
     RecordingSession,
     atomic_write_json,
     build_capture_command,
+    build_embed_chapters_command,
+    build_live_chat_command,
     build_trim_command,
+    chapter_events_for_segment,
+    format_ffmetadata_chapters,
     load_session,
+    parse_superchat_events,
     parse_progress_line,
     quality_fallback_ladder,
     safe_filename,
@@ -99,3 +104,57 @@ def test_atomic_json_write_creates_parent_and_valid_json(tmp_path):
     target = tmp_path / "nested" / "state.json"
     atomic_write_json(target, {"ok": True})
     assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_live_chat_command_and_superchat_chapter_parser():
+    command = build_live_chat_command(["yt-dlp"], "https://youtu.be/example", "stream.%(ext)s")
+    assert "--skip-download" in command
+    assert command[command.index("--sub-langs") + 1] == "live_chat"
+    assert command[-1] == "https://youtu.be/example"
+
+    records = [
+        {
+            "videoOffsetTimeMsec": "12500",
+            "replayChatItemAction": {
+                "actions": [
+                    {
+                        "addChatItemAction": {
+                            "item": {
+                                "liveChatPaidMessageRenderer": {
+                                    "purchaseAmountText": {"simpleText": "$5.00"},
+                                    "authorName": {"simpleText": "Ada"},
+                                    "message": {"runs": [{"text": "Great show!"}]},
+                                }
+                            }
+                        }
+                    }
+                ]
+            },
+        }
+    ]
+    events = parse_superchat_events(records)
+    assert events == [
+        {
+            "offset_ms": 12500,
+            "title": "Super Chat $5.00 — Ada",
+            "message": "Great show!",
+            "amount": "$5.00",
+            "author": "Ada",
+        }
+    ]
+    segment_events = chapter_events_for_segment(events, 2, 10)
+    assert segment_events[0]["start_ms"] == 2500
+    segment_events = chapter_events_for_segment(events, 1, 20)
+    assert segment_events[0]["start_ms"] == 12500
+
+
+def test_ffmetadata_chapters_escape_text_and_embed_command(tmp_path):
+    metadata = format_ffmetadata_chapters(
+        [{"start_ms": 1000, "title": "A=B; C", "message": "hello #1"}],
+        30,
+    )
+    assert "title=A\\=B\\; C" in metadata
+    assert "comment=hello \\#1" in metadata
+    command = build_embed_chapters_command("ffmpeg", "input.m4a", "chapters.ffmeta", "output.m4a")
+    assert command[-1] == "output.m4a"
+    assert "-map_metadata" in command

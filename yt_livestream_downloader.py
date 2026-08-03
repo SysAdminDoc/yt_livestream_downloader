@@ -73,13 +73,18 @@ from yt_livestream_core import (
     OVERLAP_SECONDS,
     ManifestStore,
     RecordingSession,
+    build_embed_chapters_command,
     build_capture_command,
+    build_live_chat_command,
     build_trim_command,
+    chapter_events_for_segment,
     check_disk_space,
     clear_session,
     extension_for_quality,
+    format_ffmetadata_chapters,
     load_session,
     parse_progress_line,
+    parse_superchat_events,
     quality_fallback_ladder,
     safe_filename,
 )
@@ -546,6 +551,7 @@ class SegmentDownloader(QThread):
         use_native_segmenter=False,
         write_subtitles=False,
         subtitle_languages="en.*",
+        capture_superchats=False,
         warn_free_gb=5.0,
         pause_free_gb=1.0,
         parent=None,
@@ -563,12 +569,17 @@ class SegmentDownloader(QThread):
         self.use_native_segmenter = use_native_segmenter
         self.write_subtitles = write_subtitles
         self.subtitle_languages = subtitle_languages
+        self.capture_superchats = capture_superchats
         self.warn_free_gb = warn_free_gb
         self.pause_free_gb = pause_free_gb
         self._stop_requested = False
         self._current_process = None
         self._active_slots = []
         self._manifest = None
+        self._chat_process = None
+        self._chat_path = None
+        self._completed_segments = []
+        self._chat_first_segment = 1
 
     def request_stop(self):
         self._stop_requested = True
@@ -949,6 +960,8 @@ class SegmentDownloader(QThread):
                 self.resume_session.advance(slot.segment_number)
             except OSError as exc:
                 self.log_message.emit(f"Resume state update failed: {exc}")
+        if (slot.segment_number, filepath) not in self._completed_segments:
+            self._completed_segments.append((slot.segment_number, filepath))
         label = "Partial segment saved" if partial else "Segment complete"
         self.log_message.emit(f"{label}: {os.path.basename(filepath)} ({size / (1024 * 1024):.1f} MB)")
         self.segment_complete.emit(filepath, size)
@@ -1010,6 +1023,115 @@ class SegmentDownloader(QThread):
         self.use_native_segmenter = requested_native
         return None
 
+    def _start_chat_capture(self, ytdlp_cmd, safe_title, first_segment):
+        if not self.capture_superchats or self.quality != "Audio Only":
+            return
+        self._chat_first_segment = first_segment
+        self._chat_path = os.path.join(self.output_dir, f"{safe_title}.live_chat.json")
+        template = os.path.join(self.output_dir, f"{safe_title}.%(ext)s")
+        command = build_live_chat_command(ytdlp_cmd, self.url, template)
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        try:
+            self._chat_process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            self.log_message.emit("Super Chat capture armed for audio-only chapters.")
+        except OSError as exc:
+            self._chat_process = None
+            self.log_message.emit(f"Super Chat capture unavailable: {exc}")
+
+    def _stop_chat_capture(self):
+        if self._chat_process:
+            try:
+                if self._chat_process.poll() is None:
+                    self._chat_process.terminate()
+                    self._chat_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    self._chat_process.kill()
+                    self._chat_process.wait(timeout=5)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            self._chat_process = None
+
+        candidates = []
+        if self._chat_path:
+            candidates.append(Path(self._chat_path))
+        candidates.extend(Path(self.output_dir).glob("*.live_chat.json"))
+        for candidate in candidates:
+            if candidate.is_file():
+                try:
+                    events = parse_superchat_events(candidate)
+                    if events:
+                        self.log_message.emit(f"Loaded {len(events)} Super Chat chapter event(s).")
+                    return events
+                except (OSError, ValueError) as exc:
+                    self.log_message.emit(f"Super Chat parse skipped: {exc}")
+        return []
+
+    def _embed_superchat_chapters(self, events):
+        if not events or self.quality != "Audio Only" or not self._completed_segments:
+            return
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            self.log_message.emit("Super Chat chapters skipped because ffmpeg is unavailable.")
+            return
+        segment_seconds = self.segment_minutes * 60
+        for segment_number, filepath in list(self._completed_segments):
+            if not filepath.lower().endswith(".m4a") or not os.path.isfile(filepath):
+                continue
+            segment_events = chapter_events_for_segment(
+                events,
+                segment_number,
+                segment_seconds,
+                first_segment_number=self._chat_first_segment,
+            )
+            if not segment_events:
+                continue
+            metadata_path = Path(f"{filepath}.chapters.ffmeta")
+            temporary_path = Path(f"{filepath}.chapters.tmp.m4a")
+            try:
+                metadata_path.write_text(
+                    format_ffmetadata_chapters(segment_events, segment_seconds),
+                    encoding="utf-8",
+                )
+                result = subprocess.run(
+                    build_embed_chapters_command(ffmpeg_path, filepath, metadata_path, temporary_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+                if result.returncode == 0 and temporary_path.is_file() and temporary_path.stat().st_size > 1024:
+                    os.replace(temporary_path, filepath)
+                    if self._manifest:
+                        self._manifest.record_segment(
+                            filepath,
+                            segment_number,
+                            quality="Audio Only",
+                            duration_seconds=segment_seconds,
+                            partial=False,
+                        )
+                    self.log_message.emit(
+                        f"Embedded {len(segment_events)} Super Chat chapter(s) in {os.path.basename(filepath)}."
+                    )
+                else:
+                    detail = result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
+                    self.log_message.emit(f"Chapter embedding skipped for {os.path.basename(filepath)}: {detail}")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self.log_message.emit(f"Chapter embedding skipped for {os.path.basename(filepath)}: {exc}")
+            finally:
+                for temporary in (metadata_path, temporary_path):
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+
     def _resolve_title(self, ytdlp_cmd):
         safe_title = safe_filename(self.filename_prefix)
         if self.filename_prefix:
@@ -1069,6 +1191,7 @@ class SegmentDownloader(QThread):
             self.resume_session.save()
             self._manifest = ManifestStore.open(self.output_dir, self.resume_session.session_id)
             self.log_message.emit(f"Starting at segment {segment_num}; manifest: {self._manifest.path.name}")
+            self._start_chat_capture(ytdlp_cmd, safe_title, segment_num)
 
             segment_secs = max(1, self.segment_minutes * 60)
             overlap = min(OVERLAP_SECONDS, max(0, segment_secs - 1))
@@ -1161,6 +1284,11 @@ class SegmentDownloader(QThread):
         except Exception as exc:
             self.error.emit(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
         finally:
+            try:
+                chat_events = self._stop_chat_capture()
+                self._embed_superchat_chapters(chat_events)
+            except Exception as exc:
+                self.log_message.emit(f"Super Chat chapter finalization skipped: {exc}")
             self._current_process = None
             self.finished_all.emit()
 
@@ -1470,6 +1598,11 @@ class MainWindow(QMainWindow):
         self.resume_hint_label.setObjectName("helperLabel")
         self.resume_hint_label.setWordWrap(True)
         sg.addWidget(self.resume_hint_label, 9, 0, 1, 4)
+        self.superchat_check = QCheckBox("Super Chat chapters (Audio Only)")
+        self.superchat_check.setToolTip(
+            "Capture YouTube live-chat paid messages and embed them as chapters in Audio Only segments."
+        )
+        sg.addWidget(self.superchat_check, 10, 0, 1, 4)
 
         sg.setColumnStretch(1, 1)
         layout.addWidget(stream_group)
@@ -1614,6 +1747,7 @@ class MainWindow(QMainWindow):
         self.schedule_dt.dateTimeChanged.connect(self._refresh_descriptions)
         self.resume_check.toggled.connect(self._refresh_descriptions)
         self.native_check.toggled.connect(self._refresh_descriptions)
+        self.superchat_check.toggled.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1629,6 +1763,8 @@ class MainWindow(QMainWindow):
             self.retries_spin.setValue(c['retries'])
         if c.get('native_fragments'):
             self.native_check.setChecked(True)
+        if c.get('superchat_chapters'):
+            self.superchat_check.setChecked(True)
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -1639,6 +1775,7 @@ class MainWindow(QMainWindow):
             'quality': self.quality_combo.currentText(),
             'retries': self.retries_spin.value(),
             'native_fragments': self.native_check.isChecked(),
+            'superchat_chapters': self.superchat_check.isChecked(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -1700,10 +1837,17 @@ class MainWindow(QMainWindow):
             if self.native_check.isChecked()
             else "overlap-aware ffmpeg capture"
         )
+        superchat_phrase = ""
+        if self.superchat_check.isChecked() and quality == "Audio Only":
+            superchat_phrase = " Super Chat messages are embedded as chapters."
+        elif self.superchat_check.isChecked():
+            superchat_phrase = " Super Chat chapters apply when Quality is Audio Only."
+        self.superchat_check.setEnabled(quality == "Audio Only" and not self._session_locked)
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
             f"{retries} retry{'ies' if retries != 1 else 'y'} per segment via {backend_phrase}."
+            f"{superchat_phrase}"
         )
         self.capture_summary_label.setText(capture_summary)
         self.hero_summary_label.setText(capture_summary)
@@ -2117,6 +2261,7 @@ class MainWindow(QMainWindow):
             filename_prefix=prefix,
             resume_session=self._resume_session if self.resume_check.isChecked() else None,
             use_native_segmenter=self.native_check.isChecked(),
+            capture_superchats=self.superchat_check.isChecked(),
         )
         self.worker.log_message.connect(self._log)
         self.worker.segment_complete.connect(self._on_segment_complete)
@@ -2168,6 +2313,7 @@ class MainWindow(QMainWindow):
         self.schedule_dt.setEnabled(not recording and self.schedule_check.isChecked())
         self.resume_check.setEnabled(not recording and self._resume_session is not None)
         self.native_check.setEnabled(not recording)
+        self.superchat_check.setEnabled(not recording and self.quality_combo.currentText() == "Audio Only")
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):
