@@ -23,15 +23,17 @@ PyQt6 and yt-dlp are auto-installed on first run. The only external dependency y
 
 | Feature | Description |
 |---------|-------------|
-| **Segmented Recording** | Records livestreams in configurable time chunks (1-360 min, default 30 min) |
+| **Segmented Recording** | Records livestreams in configurable time chunks (1-360 min, default 30 min) with a pre-armed overlap to reduce boundary gaps |
 | **Quality Selection** | Best, 1080p, 720p, 480p, or Audio Only |
-| **Auto-Retry** | Configurable retry attempts per segment with automatic reconnection on network drops |
+| **Auto-Retry** | Configurable retry attempts per segment, with automatic reconnection and quality fallback on network or format failures |
 | **Scheduled Start** | Set a future date/time to automatically begin recording |
 | **Stream Info Preview** | Fetch and display stream title + live status before recording |
 | **Live Stats Dashboard** | Real-time segment count, total size, elapsed time, and status cards |
 | **Toast Notifications** | In-app notification when each segment completes |
 | **Segment Playback** | Double-click any recorded segment to open in your default media player |
 | **Persistent Settings** | Remembers output folder, quality, segment length, retries, and last URL between sessions |
+| **Crash Resume** | Persists the next segment and offers to resume an interrupted recording when the same URL and folder are opened again |
+| **Integrity Manifest** | Writes an atomic `.yt_livestream_manifest.json` with each segment's size, SHA-256 checksum, quality, and partial status |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -85,6 +87,8 @@ Without a JS runtime, yt-dlp may display a warning and some formats could be una
 6. Click **Stop** at any time — the current partial segment is saved
 7. **Double-click** any segment in the list to play it
 
+If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
+
 ### Scheduled Recording
 
 Check **Scheduled Start**, set a date/time, and click Start. The app will wait with a countdown timer and begin recording automatically when the time arrives.
@@ -98,6 +102,8 @@ Stream_Title_seg001_20260208_230333.mp4
 Stream_Title_seg002_20260208_233333.mp4
 Stream_Title_seg003_20260209_000333.mp4
 ```
+
+The output folder also contains a crash-resume state file and an atomic `.yt_livestream_manifest.json` checksum manifest. The manifest is updated after each finalized segment, including user-stopped partial captures.
 
 ## How It Works
 

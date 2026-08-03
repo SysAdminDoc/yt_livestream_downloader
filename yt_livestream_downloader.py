@@ -5,7 +5,16 @@ Downloads YouTube livestreams in configurable time segments as separate files.
 Uses yt-dlp + ffmpeg under the hood.
 """
 
-import sys, os, subprocess, shutil, html
+import html
+import os
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import traceback
 from pathlib import Path
 
 
@@ -52,8 +61,24 @@ def _bootstrap():
 
 _bootstrap()
 
-import json, time, re, traceback
+import json
 from datetime import datetime
+from dataclasses import dataclass
+
+from yt_livestream_core import (
+    OVERLAP_SECONDS,
+    ManifestStore,
+    RecordingSession,
+    build_capture_command,
+    build_trim_command,
+    check_disk_space,
+    clear_session,
+    extension_for_quality,
+    load_session,
+    parse_progress_line,
+    quality_fallback_ladder,
+    safe_filename,
+)
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -476,6 +501,19 @@ class StreamInfoWorker(QThread):
 # ──────────────────────────────────────────────
 # Segment Download Worker
 # ──────────────────────────────────────────────
+@dataclass
+class _CaptureSlot:
+    segment_number: int
+    final_path: str
+    raw_path: str
+    quality: str
+    process: object
+    started_at: float
+    trim_seconds: int
+    duration_seconds: int
+    output_queue: object
+
+
 class SegmentDownloader(QThread):
     """Downloads a livestream in timed segments using yt-dlp."""
     log_message = pyqtSignal(str)
@@ -484,8 +522,24 @@ class SegmentDownloader(QThread):
     error = pyqtSignal(str)
     finished_all = pyqtSignal()
 
-    def __init__(self, url, output_dir, segment_minutes, quality, max_retries=3,
-                 retry_delay=10, filename_prefix="", parent=None):
+    def __init__(
+        self,
+        url,
+        output_dir,
+        segment_minutes,
+        quality,
+        max_retries=3,
+        retry_delay=10,
+        filename_prefix="",
+        resume_session=None,
+        live_from_start=False,
+        use_native_segmenter=False,
+        write_subtitles=False,
+        subtitle_languages="en.*",
+        warn_free_gb=5.0,
+        pause_free_gb=1.0,
+        parent=None,
+    ):
         super().__init__(parent)
         self.url = url
         self.output_dir = output_dir
@@ -494,14 +548,24 @@ class SegmentDownloader(QThread):
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.filename_prefix = filename_prefix
+        self.resume_session = resume_session
+        self.live_from_start = live_from_start
+        self.use_native_segmenter = use_native_segmenter
+        self.write_subtitles = write_subtitles
+        self.subtitle_languages = subtitle_languages
+        self.warn_free_gb = warn_free_gb
+        self.pause_free_gb = pause_free_gb
         self._stop_requested = False
         self._current_process = None
+        self._active_slots = []
+        self._manifest = None
 
     def request_stop(self):
         self._stop_requested = True
-        if self._current_process:
+        for slot in list(self._active_slots):
             try:
-                self._current_process.terminate()
+                if slot.process.poll() is None:
+                    slot.process.terminate()
             except Exception:
                 pass
 
@@ -518,7 +582,7 @@ class SegmentDownloader(QThread):
         name = re.sub(r'_+', '_', name)
         return name[:80].strip('_ ')
 
-    def run(self):
+    def _legacy_run(self):
         try:
             ytdlp_cmd = self._get_ytdlp_cmd()
             self.log_message.emit(f"yt-dlp: {' '.join(ytdlp_cmd)}")
@@ -678,6 +742,373 @@ class SegmentDownloader(QThread):
 
 
 # ──────────────────────────────────────────────
+# Overlap-aware recording implementation
+# ──────────────────────────────────────────────
+    def _read_process_output(self, stream, output_queue):
+        try:
+            for line in iter(stream.readline, ""):
+                output_queue.put(line)
+        finally:
+            stream.close()
+
+    def _filename(self, safe_title, segment_number, quality, overlap=False):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        extension = extension_for_quality(quality)
+        filename = f"{safe_title}_seg{segment_number:03d}_{timestamp}.{extension}"
+        final_path = os.path.join(self.output_dir, filename)
+        if overlap:
+            stem, suffix = os.path.splitext(final_path)
+            return final_path, f"{stem}.overlap{suffix}"
+        return final_path, final_path
+
+    def _launch_slot(self, ytdlp_cmd, safe_title, segment_number, segment_secs, quality, trim_seconds=0):
+        final_path, raw_path = self._filename(
+            safe_title,
+            segment_number,
+            quality,
+            overlap=trim_seconds > 0,
+        )
+        duration_seconds = segment_secs + trim_seconds
+        command = build_capture_command(
+            ytdlp_cmd,
+            self.url,
+            raw_path,
+            quality,
+            duration_seconds,
+            use_native_segmenter=self.use_native_segmenter,
+            live_from_start=self.live_from_start,
+            write_subtitles=self.write_subtitles,
+            subtitle_languages=self.subtitle_languages,
+        )
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            creationflags=creationflags,
+        )
+        output_queue = queue.Queue()
+        threading.Thread(
+            target=self._read_process_output,
+            args=(process.stdout, output_queue),
+            daemon=True,
+        ).start()
+        slot = _CaptureSlot(
+            segment_number=segment_number,
+            final_path=final_path,
+            raw_path=raw_path,
+            quality=quality,
+            process=process,
+            started_at=time.monotonic(),
+            trim_seconds=trim_seconds,
+            duration_seconds=duration_seconds,
+            output_queue=output_queue,
+        )
+        self._active_slots.append(slot)
+        self._current_process = process
+        self.status_update.emit(f"Recording segment {segment_number}...")
+        self.log_message.emit(
+            f"\n--- Segment {segment_number} | {datetime.now().strftime('%H:%M:%S')} ---"
+        )
+        self.log_message.emit(f"File: {os.path.basename(final_path)} | quality: {quality}")
+        if trim_seconds:
+            self.log_message.emit(f"Pre-armed {OVERLAP_SECONDS}s before the boundary; trim offset: {trim_seconds}s")
+        return slot
+
+    def _drain_output(self, slot):
+        while True:
+            try:
+                raw_line = slot.output_queue.get_nowait()
+            except queue.Empty:
+                break
+            line = raw_line.strip()
+            if not line:
+                continue
+            lower = line.lower()
+            if any(keyword in lower for keyword in ("download", "error", "warning", "merge", "frame", "size", "%", "fragment")):
+                self.log_message.emit(line)
+            elapsed = max(0, int(time.monotonic() - slot.started_at))
+            percent = parse_progress_line(line)
+            progress = f" ({percent:.1f}%)" if percent is not None else ""
+            self.status_update.emit(
+                f"Segment {slot.segment_number} | {elapsed // 60:02d}:{elapsed % 60:02d}"
+                f" / {self.segment_minutes:02d}:00{progress}"
+            )
+
+    def _terminate_slot(self, slot):
+        process = slot.process
+        try:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _discard_slot(self, slot):
+        self._terminate_slot(slot)
+        try:
+            self._active_slots.remove(slot)
+        except ValueError:
+            pass
+        for path in {slot.raw_path, slot.final_path}:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def _valid_file(self, path):
+        try:
+            return os.path.isfile(path) and os.path.getsize(path) > 1024
+        except OSError:
+            return False
+
+    def _trim_slot(self, slot):
+        if not self._valid_file(slot.raw_path):
+            return None
+        if slot.trim_seconds <= 0:
+            if slot.raw_path != slot.final_path:
+                os.replace(slot.raw_path, slot.final_path)
+            return slot.final_path
+
+        ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
+        try:
+            result = subprocess.run(
+                build_trim_command(ffmpeg_path, slot.raw_path, slot.final_path, slot.trim_seconds),
+                capture_output=True,
+                text=True,
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if result.returncode == 0 and self._valid_file(slot.final_path):
+                os.remove(slot.raw_path)
+                return slot.final_path
+            detail = result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
+            self.log_message.emit(f"Overlap trim failed: {detail}; preserving raw capture")
+        except Exception as exc:
+            self.log_message.emit(f"Overlap trim failed: {exc}; preserving raw capture")
+
+        try:
+            os.replace(slot.raw_path, slot.final_path)
+            return slot.final_path
+        except OSError:
+            return None
+
+    def _finalize_slot(self, slot, partial=False):
+        filepath = self._trim_slot(slot)
+        try:
+            self._active_slots.remove(slot)
+        except ValueError:
+            pass
+        if not filepath or not self._valid_file(filepath):
+            return None
+        size = os.path.getsize(filepath)
+        if self._manifest:
+            try:
+                self._manifest.record_segment(
+                    filepath,
+                    slot.segment_number,
+                    quality=slot.quality,
+                    duration_seconds=self.segment_minutes * 60,
+                    partial=partial,
+                )
+            except OSError as exc:
+                self.log_message.emit(f"Manifest update failed: {exc}")
+        if self.resume_session:
+            try:
+                self.resume_session.advance(slot.segment_number)
+            except OSError as exc:
+                self.log_message.emit(f"Resume state update failed: {exc}")
+        label = "Partial segment saved" if partial else "Segment complete"
+        self.log_message.emit(f"{label}: {os.path.basename(filepath)} ({size / (1024 * 1024):.1f} MB)")
+        self.segment_complete.emit(filepath, size)
+        return filepath
+
+    def _wait_for_retry(self, segment_number, attempt):
+        if attempt <= 0:
+            return True
+        self.log_message.emit(f"Retry {attempt}/{self.max_retries} in {self.retry_delay}s...")
+        self.status_update.emit(f"Retrying segment {segment_number} ({attempt}/{self.max_retries})...")
+        for _ in range(max(0, self.retry_delay * 10)):
+            if self._stop_requested:
+                return False
+            time.sleep(0.1)
+        return True
+
+    def _capture_with_retries(self, ytdlp_cmd, safe_title, segment_number, segment_secs):
+        for quality in quality_fallback_ladder(self.quality):
+            if quality != self.quality:
+                self.log_message.emit(f"Quality fallback: retrying segment {segment_number} at {quality}")
+            for attempt in range(self.max_retries + 1):
+                if not self._wait_for_retry(segment_number, attempt):
+                    return None
+                slot = self._launch_slot(ytdlp_cmd, safe_title, segment_number, segment_secs, quality)
+                while slot.process.poll() is None and not self._stop_requested:
+                    self._drain_output(slot)
+                    time.sleep(0.1)
+                self._drain_output(slot)
+                if self._stop_requested:
+                    self._terminate_slot(slot)
+                    self._finalize_slot(slot, partial=True)
+                    return None
+                if slot.process.returncode == 0 and self._valid_file(slot.raw_path):
+                    return self._finalize_slot(slot)
+                self.log_message.emit(f"yt-dlp exited with code {slot.process.returncode}")
+                self._discard_slot(slot)
+        return None
+
+    def _resolve_title(self, ytdlp_cmd):
+        safe_title = safe_filename(self.filename_prefix)
+        if self.filename_prefix:
+            return safe_title
+        try:
+            info_cmd = ytdlp_cmd + ["--dump-json", "--no-download", self.url]
+            result = subprocess.run(
+                info_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                info = json.loads(result.stdout.strip().split("\n")[0])
+                return safe_filename(info.get("title", "livestream"))
+        except Exception as exc:
+            self.log_message.emit(f"Stream title lookup skipped: {exc}")
+        return safe_title
+
+    def run(self):
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            ytdlp_cmd = self._get_ytdlp_cmd()
+            self.log_message.emit(f"yt-dlp: {' '.join(ytdlp_cmd)}")
+            self.log_message.emit(f"Output: {self.output_dir}")
+            self.log_message.emit(f"Segments: {self.segment_minutes} min | Quality: {self.quality}")
+            self.log_message.emit(f"Retries: {self.max_retries} (delay {self.retry_delay}s)")
+            self.status_update.emit("Checking available disk space...")
+            disk = check_disk_space(self.output_dir, self.warn_free_gb, self.pause_free_gb)
+            if disk.level == "pause":
+                self.error.emit("Recording paused: available disk space is below the safety threshold.")
+                return
+            if disk.level == "warn":
+                self.log_message.emit("Warning: available disk space is below the configured warning threshold.")
+
+            self.status_update.emit("Fetching stream info...")
+            safe_title = self._resolve_title(ytdlp_cmd)
+            if not self.resume_session:
+                self.resume_session = RecordingSession(
+                    url=self.url,
+                    output_dir=self.output_dir,
+                    next_segment=1,
+                    segment_minutes=self.segment_minutes,
+                    quality=self.quality,
+                    max_retries=self.max_retries,
+                    filename_prefix=safe_title,
+                    session_id=datetime.now().strftime("%Y%m%d%H%M%S"),
+                    stream_title=safe_title,
+                )
+            segment_num = max(1, self.resume_session.next_segment)
+            self.resume_session.save()
+            self._manifest = ManifestStore.open(self.output_dir, self.resume_session.session_id)
+            self.log_message.emit(f"Starting at segment {segment_num}; manifest: {self._manifest.path.name}")
+
+            segment_secs = max(1, self.segment_minutes * 60)
+            overlap = min(OVERLAP_SECONDS, max(0, segment_secs - 1))
+            consecutive_failures = 0
+            pipeline_enabled = not self.use_native_segmenter
+            current = self._launch_slot(ytdlp_cmd, safe_title, segment_num, segment_secs, self.quality)
+            next_slot = None
+            next_start = current.started_at + segment_secs - overlap
+
+            while current and not self._stop_requested:
+                self._drain_output(current)
+                now = time.monotonic()
+                if pipeline_enabled and next_slot is None and now >= next_start:
+                    next_slot = self._launch_slot(
+                        ytdlp_cmd,
+                        safe_title,
+                        current.segment_number + 1,
+                        segment_secs,
+                        self.quality,
+                        trim_seconds=overlap,
+                    )
+
+                if current.process.poll() is None:
+                    time.sleep(0.1)
+                    continue
+
+                self._drain_output(current)
+                if current.process.returncode == 0 and self._valid_file(current.raw_path):
+                    self._finalize_slot(current)
+                    consecutive_failures = 0
+                    if next_slot:
+                        current = next_slot
+                        next_slot = None
+                        next_start = current.started_at + segment_secs
+                    else:
+                        current = self._launch_slot(
+                            ytdlp_cmd,
+                            safe_title,
+                            current.segment_number + 1,
+                            segment_secs,
+                            self.quality,
+                        )
+                        next_start = current.started_at + segment_secs - overlap
+                    continue
+
+                failed_segment = current.segment_number
+                self.log_message.emit(f"Segment {failed_segment} failed with exit code {current.process.returncode}")
+                self._discard_slot(current)
+                if next_slot:
+                    self._discard_slot(next_slot)
+                    next_slot = None
+                recovered = self._capture_with_retries(
+                    ytdlp_cmd,
+                    safe_title,
+                    failed_segment,
+                    segment_secs,
+                )
+                if recovered:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    self.log_message.emit(
+                        f"Segment {failed_segment} failed after {self.max_retries + 1} attempts."
+                    )
+                if consecutive_failures >= 3:
+                    self.log_message.emit("3 consecutive failures. Stream likely ended.")
+                    clear_session(self.output_dir)
+                    break
+                current = self._launch_slot(
+                    ytdlp_cmd,
+                    safe_title,
+                    failed_segment + 1,
+                    segment_secs,
+                    self.quality,
+                )
+                next_start = current.started_at + segment_secs - overlap
+
+            if self._stop_requested:
+                self.log_message.emit("\nStopped by user.")
+                for slot in list(self._active_slots):
+                    self._terminate_slot(slot)
+                    self._drain_output(slot)
+                    self._finalize_slot(slot, partial=True)
+        except Exception as exc:
+            self.error.emit(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+        finally:
+            self._current_process = None
+            self.finished_all.emit()
+
+
+# ──────────────────────────────────────────────
 # Stat Card Widget
 # ──────────────────────────────────────────────
 class StatCard(QFrame):
@@ -736,6 +1167,7 @@ class MainWindow(QMainWindow):
         self._previewed_url = None
         self._ffmpeg_ok = False
         self._ytdlp_ok = False
+        self._resume_session = None
 
         self._config = load_config()
         self._default_output = self._config.get(
@@ -749,8 +1181,10 @@ class MainWindow(QMainWindow):
         self._set_stream_preview_placeholder()
         self._refresh_descriptions()
         self._refresh_url_guidance()
+        self._refresh_resume_state()
         self._refresh_action_availability()
         self._refresh_idle_state()
+        self._refresh_resume_state()
 
     def _build_ui(self):
         central = QWidget()
@@ -962,6 +1396,17 @@ class MainWindow(QMainWindow):
         self.schedule_summary_label.setWordWrap(True)
         sg.addWidget(self.schedule_summary_label, 7, 0, 1, 4)
 
+        self.resume_check = QCheckBox("Resume previous session")
+        self.resume_check.setToolTip(
+            "Continue from the next segment recorded in the output folder's crash-resume state."
+        )
+        self.resume_check.setEnabled(False)
+        sg.addWidget(self.resume_check, 8, 0, 1, 2)
+        self.resume_hint_label = QLabel("")
+        self.resume_hint_label.setObjectName("helperLabel")
+        self.resume_hint_label.setWordWrap(True)
+        sg.addWidget(self.resume_hint_label, 9, 0, 1, 4)
+
         sg.setColumnStretch(1, 1)
         layout.addWidget(stream_group)
 
@@ -1098,10 +1543,12 @@ class MainWindow(QMainWindow):
         self.segment_list.itemDoubleClicked.connect(self._play_segment)
         self.url_input.textChanged.connect(self._on_url_text_changed)
         self.output_input.textChanged.connect(self._refresh_descriptions)
+        self.output_input.textChanged.connect(self._refresh_resume_state)
         self.segment_spin.valueChanged.connect(self._refresh_descriptions)
         self.quality_combo.currentTextChanged.connect(self._refresh_descriptions)
         self.retries_spin.valueChanged.connect(self._refresh_descriptions)
         self.schedule_dt.dateTimeChanged.connect(self._refresh_descriptions)
+        self.resume_check.toggled.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1127,6 +1574,35 @@ class MainWindow(QMainWindow):
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
+
+    def _refresh_resume_state(self):
+        if not hasattr(self, "resume_check"):
+            return
+        output_dir = self.output_input.text().strip() or self._default_output
+        url = self.url_input.text().strip()
+        state = load_session(output_dir) if url else None
+        matching = False
+        if state and state.url == url:
+            try:
+                matching = Path(state.output_dir).resolve() == Path(output_dir).resolve()
+            except OSError:
+                matching = state.output_dir == output_dir
+        self._resume_session = state if matching else None
+        self.resume_check.blockSignals(True)
+        if matching:
+            self.resume_check.setEnabled(not self._session_locked)
+            if not self._session_locked and not self.resume_check.isChecked():
+                self.resume_check.setChecked(True)
+            self.resume_hint_label.setText(
+                f"Resume state found. The next capture will start at segment {state.next_segment}."
+            )
+        else:
+            self.resume_check.setChecked(False)
+            self.resume_check.setEnabled(False)
+            self.resume_hint_label.setText(
+                "A crash-resume state will appear here after the first recording session starts."
+            )
+        self.resume_check.blockSignals(False)
 
     def _set_stream_preview_placeholder(
         self,
@@ -1550,8 +2026,7 @@ class MainWindow(QMainWindow):
         prefix = ""
         if self._stream_info:
             raw = self._stream_info.get('title', '')
-            prefix = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', raw)
-            prefix = re.sub(r'_+', '_', prefix)[:80].strip('_ ')
+            prefix = safe_filename(raw)
 
         self.worker = SegmentDownloader(
             url=url,
@@ -1561,6 +2036,7 @@ class MainWindow(QMainWindow):
             max_retries=self.retries_spin.value(),
             retry_delay=10,
             filename_prefix=prefix,
+            resume_session=self._resume_session if self.resume_check.isChecked() else None,
         )
         self.worker.log_message.connect(self._log)
         self.worker.segment_complete.connect(self._on_segment_complete)
@@ -1610,6 +2086,7 @@ class MainWindow(QMainWindow):
         self.retries_spin.setEnabled(not recording)
         self.schedule_check.setEnabled(not recording)
         self.schedule_dt.setEnabled(not recording and self.schedule_check.isChecked())
+        self.resume_check.setEnabled(not recording and self._resume_session is not None)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):
@@ -1685,6 +2162,7 @@ class MainWindow(QMainWindow):
         self._log("Recording session ended.")
         self.worker = None
         self._user_stopped = False
+        self._refresh_resume_state()
 
     def closeEvent(self, event):
         self._save_settings()
