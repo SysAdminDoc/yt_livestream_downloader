@@ -49,6 +49,10 @@ def test_capture_and_trim_commands_keep_overlap_duration_explicit():
     assert "--downloader" in command
     assert "ffmpeg:-t 182" in command
     assert command[-1] == "https://youtu.be/example"
+    subtitle_command = build_capture_command(
+        ["yt-dlp"], "https://youtu.be/example", "segment.mp4", "Best", 30, write_subtitles=True
+    )
+    assert "--write-auto-subs" in subtitle_command
     assert build_trim_command("ffmpeg", "raw.mp4", "final.mp4", 2)[-3:] == [
         "-avoid_negative_ts",
         "make_zero",

@@ -14,6 +14,7 @@ All notable changes to yt_livestream_downloader will be documented in this file.
 - Added: credential-free channel watcher that polls yt-dlp's public `/live` listing and starts the shared recorder on detection.
 - Added: dependency-free recurring five-field cron scheduling with bounded occurrence counts for headless capture.
 - Added: optional Discord-compatible webhook notifications for saved segments, errors, clean stops, and stream completion.
+- Added: GUI automatic-subtitle toggle with finalized sidecar renaming for overlap captures.
 - Fixed: frozen builds no longer recurse into themselves while bootstrapping optional dependencies.
 
 ## [v1.0.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)

@@ -936,6 +936,25 @@ class SegmentDownloader(QThread):
         except OSError:
             return None
 
+    def _move_subtitles(self, slot, filepath):
+        if not self.write_subtitles:
+            return
+        raw_stem = Path(slot.raw_path).stem
+        final_path = Path(filepath)
+        final_stem = final_path.stem
+        for candidate in Path(self.output_dir).glob(f"{raw_stem}.*"):
+            if not candidate.is_file() or candidate.suffix.lower() not in {".vtt", ".srt", ".ass", ".srv3", ".ttml"}:
+                continue
+            suffix = candidate.name[len(raw_stem):]
+            destination = final_path.with_name(f"{final_stem}{suffix}")
+            if destination == candidate:
+                continue
+            try:
+                os.replace(candidate, destination)
+                self.log_message.emit(f"Subtitle sidecar saved: {destination.name}")
+            except OSError as exc:
+                self.log_message.emit(f"Subtitle sidecar move skipped: {exc}")
+
     def _finalize_slot(self, slot, partial=False):
         filepath = self._trim_slot(slot)
         try:
@@ -944,6 +963,7 @@ class SegmentDownloader(QThread):
             pass
         if not filepath or not self._valid_file(filepath):
             return None
+        self._move_subtitles(slot, filepath)
         size = os.path.getsize(filepath)
         if self._manifest:
             try:
@@ -1604,6 +1624,9 @@ class MainWindow(QMainWindow):
             "Capture YouTube live-chat paid messages and embed them as chapters in Audio Only segments."
         )
         sg.addWidget(self.superchat_check, 10, 0, 1, 4)
+        self.subtitle_check = QCheckBox("Automatic subtitles")
+        self.subtitle_check.setToolTip("Write yt-dlp automatic subtitle files beside each finalized segment.")
+        sg.addWidget(self.subtitle_check, 11, 0, 1, 2)
 
         sg.setColumnStretch(1, 1)
         layout.addWidget(stream_group)
@@ -1749,6 +1772,7 @@ class MainWindow(QMainWindow):
         self.resume_check.toggled.connect(self._refresh_descriptions)
         self.native_check.toggled.connect(self._refresh_descriptions)
         self.superchat_check.toggled.connect(self._refresh_descriptions)
+        self.subtitle_check.toggled.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1766,6 +1790,8 @@ class MainWindow(QMainWindow):
             self.native_check.setChecked(True)
         if c.get('superchat_chapters'):
             self.superchat_check.setChecked(True)
+        if c.get('automatic_subtitles'):
+            self.subtitle_check.setChecked(True)
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -1777,6 +1803,7 @@ class MainWindow(QMainWindow):
             'retries': self.retries_spin.value(),
             'native_fragments': self.native_check.isChecked(),
             'superchat_chapters': self.superchat_check.isChecked(),
+            'automatic_subtitles': self.subtitle_check.isChecked(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -1844,11 +1871,13 @@ class MainWindow(QMainWindow):
         elif self.superchat_check.isChecked():
             superchat_phrase = " Super Chat chapters apply when Quality is Audio Only."
         self.superchat_check.setEnabled(quality == "Audio Only" and not self._session_locked)
+        subtitle_phrase = " Automatic subtitles are written beside each segment." if self.subtitle_check.isChecked() else ""
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
             f"{retries} retry{'ies' if retries != 1 else 'y'} per segment via {backend_phrase}."
             f"{superchat_phrase}"
+            f"{subtitle_phrase}"
         )
         self.capture_summary_label.setText(capture_summary)
         self.hero_summary_label.setText(capture_summary)
@@ -2263,6 +2292,7 @@ class MainWindow(QMainWindow):
             resume_session=self._resume_session if self.resume_check.isChecked() else None,
             use_native_segmenter=self.native_check.isChecked(),
             capture_superchats=self.superchat_check.isChecked(),
+            write_subtitles=self.subtitle_check.isChecked(),
         )
         self.worker.log_message.connect(self._log)
         self.worker.segment_complete.connect(self._on_segment_complete)
@@ -2315,6 +2345,7 @@ class MainWindow(QMainWindow):
         self.resume_check.setEnabled(not recording and self._resume_session is not None)
         self.native_check.setEnabled(not recording)
         self.superchat_check.setEnabled(not recording and self.quality_combo.currentText() == "Audio Only")
+        self.subtitle_check.setEnabled(not recording)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):

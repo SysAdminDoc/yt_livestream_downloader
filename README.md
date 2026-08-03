@@ -41,6 +41,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Headless CLI** | Runs the same recorder without a window for NAS/server use, including resume, scheduling, subtitles, native fragments, and disk thresholds |
 | **Channel Watcher** | Polls a channel's public `/live` page and starts the recorder when yt-dlp reports a live video |
 | **Webhook Notifications** | CLI can POST Discord-compatible segment, error, stop, and stream-end events to one or more webhook URLs |
+| **Automatic Subtitles** | Optional yt-dlp automatic subtitle capture is kept as a companion sidecar beside each finalized segment |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -91,9 +92,10 @@ Without a JS runtime, yt-dlp may display a warning and some formats could be una
 3. **(Optional)** Click **Fetch Info** to verify the stream is live
 4. **Configure** segment length, quality, and output folder as needed
 5. For **Audio Only**, optionally enable **Super Chat chapters** to retain paid-message timestamps as embedded chapters
-6. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
-7. Click **Stop** at any time — the current partial segment is saved
-8. **Double-click** any segment in the list to play it
+6. Optionally enable **Automatic subtitles** to write subtitle sidecars beside each segment
+7. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
+8. Click **Stop** at any time — the current partial segment is saved
+9. **Double-click** any segment in the list to play it
 
 ### Headless CLI
 
@@ -179,7 +181,7 @@ Settings are persisted to:
 | Windows | `%APPDATA%\YTLivestreamDL\config.json` |
 | macOS/Linux | `~/YTLivestreamDL/config.json` |
 
-Saved fields: output directory, segment length, quality preset, retry count, native fragment preference, Super Chat chapter preference, last URL.
+Saved fields: output directory, segment length, quality preset, retry count, native fragment preference, Super Chat chapter preference, automatic subtitle preference, last URL.
 
 ## Troubleshooting
 
