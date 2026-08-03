@@ -5,6 +5,9 @@ Downloads YouTube livestreams in configurable time segments as separate files.
 Uses yt-dlp + ffmpeg under the hood.
 """
 
+# Dependency bootstrap intentionally precedes optional imports.
+# ruff: noqa: E402
+import importlib.util
 import html
 import os
 import queue
@@ -39,10 +42,11 @@ def _branding_icon_path() -> Path:
 def _bootstrap():
     """Auto-install dependencies before any imports."""
     if sys.version_info < (3, 8):
-        print("Python 3.8+ required"); sys.exit(1)
-    try:
-        import pip
-    except ImportError:
+        print("Python 3.8+ required")
+        sys.exit(1)
+    if getattr(sys, "frozen", False):
+        return
+    if importlib.util.find_spec("pip") is None:
         subprocess.check_call([sys.executable, '-m', 'ensurepip', '--default-pip'])
     required = ['PyQt6', 'yt-dlp']
     for pkg in required:
@@ -84,11 +88,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QTextEdit, QFileDialog,
     QGroupBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem,
-    QSplitter, QStatusBar, QFrame, QCheckBox, QDateTimeEdit, QSizePolicy,
+    QSplitter, QFrame, QCheckBox, QDateTimeEdit, QSizePolicy,
     QGraphicsOpacityEffect
 )
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer, QDateTime, QSize, QPropertyAnimation, QEasingCurve
+    Qt, QThread, pyqtSignal, QTimer, QDateTime, QPropertyAnimation, QEasingCurve
 )
 from PyQt6.QtGui import QColor, QIcon, QPalette, QDesktopServices, QPixmap
 from PyQt6.QtCore import QUrl
@@ -452,6 +456,8 @@ def check_dependency(name):
             if path:
                 r = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=10)
                 return r.stdout.strip() if r.returncode == 0 else None
+            if getattr(sys, "frozen", False):
+                return None
             r = subprocess.run(
                 [sys.executable, '-m', 'yt_dlp', '--version'],
                 capture_output=True, text=True, timeout=10)
@@ -484,6 +490,9 @@ class StreamInfoWorker(QThread):
 
     def run(self):
         try:
+            if not self.ytdlp_cmd:
+                self.error.emit("yt-dlp is not available on PATH in this packaged build.")
+                return
             cmd = self.ytdlp_cmd + ['--dump-json', '--no-download', self.url]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
                                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
@@ -512,6 +521,7 @@ class _CaptureSlot:
     trim_seconds: int
     duration_seconds: int
     output_queue: object
+    native_mode: bool = False
 
 
 class SegmentDownloader(QThread):
@@ -573,6 +583,8 @@ class SegmentDownloader(QThread):
         path = shutil.which('yt-dlp')
         if path:
             return [path]
+        if getattr(sys, "frozen", False):
+            return []
         return [sys.executable, '-m', 'yt_dlp']
 
     def _sanitize_filename(self, name):
@@ -761,7 +773,16 @@ class SegmentDownloader(QThread):
             return final_path, f"{stem}.overlap{suffix}"
         return final_path, final_path
 
-    def _launch_slot(self, ytdlp_cmd, safe_title, segment_number, segment_secs, quality, trim_seconds=0):
+    def _launch_slot(
+        self,
+        ytdlp_cmd,
+        safe_title,
+        segment_number,
+        segment_secs,
+        quality,
+        trim_seconds=0,
+        use_native_segmenter=None,
+    ):
         final_path, raw_path = self._filename(
             safe_title,
             segment_number,
@@ -769,13 +790,14 @@ class SegmentDownloader(QThread):
             overlap=trim_seconds > 0,
         )
         duration_seconds = segment_secs + trim_seconds
+        native_mode = self.use_native_segmenter if use_native_segmenter is None else use_native_segmenter
         command = build_capture_command(
             ytdlp_cmd,
             self.url,
             raw_path,
             quality,
             duration_seconds,
-            use_native_segmenter=self.use_native_segmenter,
+            use_native_segmenter=native_mode,
             live_from_start=self.live_from_start,
             write_subtitles=self.write_subtitles,
             subtitle_languages=self.subtitle_languages,
@@ -805,6 +827,7 @@ class SegmentDownloader(QThread):
             trim_seconds=trim_seconds,
             duration_seconds=duration_seconds,
             output_queue=output_queue,
+            native_mode=native_mode,
         )
         self._active_slots.append(slot)
         self._current_process = process
@@ -943,25 +966,48 @@ class SegmentDownloader(QThread):
         return True
 
     def _capture_with_retries(self, ytdlp_cmd, safe_title, segment_number, segment_secs):
-        for quality in quality_fallback_ladder(self.quality):
-            if quality != self.quality:
-                self.log_message.emit(f"Quality fallback: retrying segment {segment_number} at {quality}")
-            for attempt in range(self.max_retries + 1):
-                if not self._wait_for_retry(segment_number, attempt):
-                    return None
-                slot = self._launch_slot(ytdlp_cmd, safe_title, segment_number, segment_secs, quality)
-                while slot.process.poll() is None and not self._stop_requested:
+        requested_native = self.use_native_segmenter
+        modes = [True, False] if requested_native else [False]
+        for native_mode in modes:
+            self.use_native_segmenter = native_mode
+            if requested_native and not native_mode:
+                self.log_message.emit("Native fragment capture was unavailable; falling back to ffmpeg timing.")
+            for quality in quality_fallback_ladder(self.quality):
+                if quality != self.quality:
+                    self.log_message.emit(f"Quality fallback: retrying segment {segment_number} at {quality}")
+                for attempt in range(self.max_retries + 1):
+                    if not self._wait_for_retry(segment_number, attempt):
+                        self.use_native_segmenter = requested_native
+                        return None
+                    slot = self._launch_slot(
+                        ytdlp_cmd,
+                        safe_title,
+                        segment_number,
+                        segment_secs,
+                        quality,
+                        use_native_segmenter=native_mode,
+                    )
+                    boundary_stop = False
+                    while slot.process.poll() is None and not self._stop_requested:
+                        self._drain_output(slot)
+                        if slot.native_mode and time.monotonic() - slot.started_at >= slot.duration_seconds:
+                            boundary_stop = True
+                            self._terminate_slot(slot)
+                            break
+                        time.sleep(0.1)
                     self._drain_output(slot)
-                    time.sleep(0.1)
-                self._drain_output(slot)
-                if self._stop_requested:
-                    self._terminate_slot(slot)
-                    self._finalize_slot(slot, partial=True)
-                    return None
-                if slot.process.returncode == 0 and self._valid_file(slot.raw_path):
-                    return self._finalize_slot(slot)
-                self.log_message.emit(f"yt-dlp exited with code {slot.process.returncode}")
-                self._discard_slot(slot)
+                    if self._stop_requested:
+                        self._terminate_slot(slot)
+                        self._finalize_slot(slot, partial=True)
+                        self.use_native_segmenter = requested_native
+                        return None
+                    if (slot.process.returncode == 0 or boundary_stop) and self._valid_file(slot.raw_path):
+                        filepath = self._finalize_slot(slot)
+                        if filepath:
+                            return filepath
+                    self.log_message.emit(f"yt-dlp exited with code {slot.process.returncode}")
+                    self._discard_slot(slot)
+        self.use_native_segmenter = requested_native
         return None
 
     def _resolve_title(self, ytdlp_cmd):
@@ -988,6 +1034,11 @@ class SegmentDownloader(QThread):
         try:
             os.makedirs(self.output_dir, exist_ok=True)
             ytdlp_cmd = self._get_ytdlp_cmd()
+            if not ytdlp_cmd:
+                self.error.emit(
+                    "yt-dlp is not available on PATH. Install the yt-dlp command-line tool before recording."
+                )
+                return
             self.log_message.emit(f"yt-dlp: {' '.join(ytdlp_cmd)}")
             self.log_message.emit(f"Output: {self.output_dir}")
             self.log_message.emit(f"Segments: {self.segment_minutes} min | Quality: {self.quality}")
@@ -1040,12 +1091,16 @@ class SegmentDownloader(QThread):
                         trim_seconds=overlap,
                     )
 
+                boundary_stop = False
+                if current.native_mode and now - current.started_at >= current.duration_seconds:
+                    boundary_stop = True
+                    self._terminate_slot(current)
                 if current.process.poll() is None:
                     time.sleep(0.1)
                     continue
 
                 self._drain_output(current)
-                if current.process.returncode == 0 and self._valid_file(current.raw_path):
+                if (current.process.returncode == 0 or boundary_stop) and self._valid_file(current.raw_path):
                     self._finalize_slot(current)
                     consecutive_failures = 0
                     if next_slot:
@@ -1077,6 +1132,8 @@ class SegmentDownloader(QThread):
                 )
                 if recovered:
                     consecutive_failures = 0
+                    if not self.use_native_segmenter:
+                        pipeline_enabled = True
                 else:
                     consecutive_failures += 1
                     self.log_message.emit(
@@ -1270,7 +1327,9 @@ class MainWindow(QMainWindow):
         hero_layout.addWidget(summary_card, 2)
         layout.addWidget(hero_card)
 
-        sep = QFrame(); sep.setObjectName("separator"); sep.setFixedHeight(1)
+        sep = QFrame()
+        sep.setObjectName("separator")
+        sep.setFixedHeight(1)
         layout.addWidget(sep)
 
         # ── Stream Preview Bar ──
@@ -1402,6 +1461,11 @@ class MainWindow(QMainWindow):
         )
         self.resume_check.setEnabled(False)
         sg.addWidget(self.resume_check, 8, 0, 1, 2)
+        self.native_check = QCheckBox("Native fragments (DASH)")
+        self.native_check.setToolTip(
+            "Use yt-dlp's native fragment downloader for DASH streams; HLS automatically falls back to ffmpeg."
+        )
+        sg.addWidget(self.native_check, 8, 2, 1, 2)
         self.resume_hint_label = QLabel("")
         self.resume_hint_label.setObjectName("helperLabel")
         self.resume_hint_label.setWordWrap(True)
@@ -1549,6 +1613,7 @@ class MainWindow(QMainWindow):
         self.retries_spin.valueChanged.connect(self._refresh_descriptions)
         self.schedule_dt.dateTimeChanged.connect(self._refresh_descriptions)
         self.resume_check.toggled.connect(self._refresh_descriptions)
+        self.native_check.toggled.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1562,6 +1627,8 @@ class MainWindow(QMainWindow):
                 self.quality_combo.setCurrentIndex(idx)
         if 'retries' in c:
             self.retries_spin.setValue(c['retries'])
+        if c.get('native_fragments'):
+            self.native_check.setChecked(True)
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -1571,6 +1638,7 @@ class MainWindow(QMainWindow):
             'segment_minutes': self.segment_spin.value(),
             'quality': self.quality_combo.currentText(),
             'retries': self.retries_spin.value(),
+            'native_fragments': self.native_check.isChecked(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -1627,10 +1695,15 @@ class MainWindow(QMainWindow):
         output_dir = self.output_input.text().strip() or self._default_output
         extension = ".m4a" if quality == "Audio Only" else ".mp4"
         quality_phrase = "audio-only" if quality == "Audio Only" else quality
+        backend_phrase = (
+            "native DASH fragments with HLS fallback"
+            if self.native_check.isChecked()
+            else "overlap-aware ffmpeg capture"
+        )
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
-            f"{retries} retry{'ies' if retries != 1 else 'y'} per segment."
+            f"{retries} retry{'ies' if retries != 1 else 'y'} per segment via {backend_phrase}."
         )
         self.capture_summary_label.setText(capture_summary)
         self.hero_summary_label.setText(capture_summary)
@@ -1676,8 +1749,12 @@ class MainWindow(QMainWindow):
         url_present = bool(self.url_input.text().strip())
         preview_busy = self.info_worker is not None and self.info_worker.isRunning()
 
-        self.fetch_info_btn.setEnabled(url_present and not preview_busy and not self._session_locked)
-        self.start_btn.setEnabled(url_present and self._ffmpeg_ok and not self._session_locked)
+        self.fetch_info_btn.setEnabled(
+            url_present and self._ytdlp_ok and not preview_busy and not self._session_locked
+        )
+        self.start_btn.setEnabled(
+            url_present and self._ytdlp_ok and self._ffmpeg_ok and not self._session_locked
+        )
         self.stop_btn.setEnabled(self._session_locked)
 
         if not self._session_locked:
@@ -1820,6 +1897,8 @@ class MainWindow(QMainWindow):
         path = shutil.which('yt-dlp')
         if path:
             return [path]
+        if getattr(sys, "frozen", False):
+            return []
         return [sys.executable, '-m', 'yt_dlp']
 
     def _fetch_stream_info(self):
@@ -2037,6 +2116,7 @@ class MainWindow(QMainWindow):
             retry_delay=10,
             filename_prefix=prefix,
             resume_session=self._resume_session if self.resume_check.isChecked() else None,
+            use_native_segmenter=self.native_check.isChecked(),
         )
         self.worker.log_message.connect(self._log)
         self.worker.segment_complete.connect(self._on_segment_complete)
@@ -2087,6 +2167,7 @@ class MainWindow(QMainWindow):
         self.schedule_check.setEnabled(not recording)
         self.schedule_dt.setEnabled(not recording and self.schedule_check.isChecked())
         self.resume_check.setEnabled(not recording and self._resume_session is not None)
+        self.native_check.setEnabled(not recording)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):

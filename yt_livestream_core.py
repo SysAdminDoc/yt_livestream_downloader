@@ -86,13 +86,15 @@ def build_capture_command(
     """Build a deterministic yt-dlp command for one capture writer.
 
     The default writer uses ffmpeg's time bound.  The native path deliberately
-    omits that ffmpeg-specific flag and asks yt-dlp to keep the stream's
-    fragments, allowing callers to use a provider-native segment workflow.
+    omits that ffmpeg-specific flag and asks yt-dlp to use its fragment
+    downloader, allowing DASH streams to be captured without ffmpeg.  yt-dlp
+    currently rejects native HLS livestream downloads; the worker detects that
+    failure and falls back to the ffmpeg writer.
     """
 
     command = [*ytdlp_cmd, "--newline", "--no-part", "--retries", "10", "--fragment-retries", "10"]
     if use_native_segmenter:
-        command.extend(["--keep-fragments", "--hls-use-mpegts"])
+        command.extend(["--downloader", "native", "--keep-fragments"])
     else:
         if duration_seconds is not None:
             command.extend(["--downloader", "ffmpeg", "--downloader-args", f"ffmpeg:-t {int(duration_seconds)}"])

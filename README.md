@@ -19,6 +19,8 @@ python yt_livestream_downloader.py
 
 PyQt6 and yt-dlp are auto-installed on first run. The only external dependency you need pre-installed is **ffmpeg**.
 
+For the packaged Windows executable, install the **yt-dlp command-line tool** on `PATH` before launching; frozen builds do not run pip or ensurepip.
+
 ## Features
 
 | Feature | Description |
@@ -34,6 +36,7 @@ PyQt6 and yt-dlp are auto-installed on first run. The only external dependency y
 | **Persistent Settings** | Remembers output folder, quality, segment length, retries, and last URL between sessions |
 | **Crash Resume** | Persists the next segment and offers to resume an interrupted recording when the same URL and folder are opened again |
 | **Integrity Manifest** | Writes an atomic `.yt_livestream_manifest.json` with each segment's size, SHA-256 checksum, quality, and partial status |
+| **Native DASH Capture** | Optional yt-dlp native fragment mode for DASH streams; automatically falls back to ffmpeg when a provider exposes an unsupported HLS live stream |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -148,6 +151,7 @@ Saved fields: output directory, segment length, quality preset, retry count, las
 |-------|----------|
 | `ffmpeg: NOT FOUND` in header | Install ffmpeg and add to PATH. Restart the app. |
 | `yt-dlp: NOT FOUND` in header | Run `pip install yt-dlp` or let the app auto-install on next launch. |
+| Packaged build cannot find yt-dlp | Install the yt-dlp command-line executable and make sure it is on `PATH`; packaged builds do not self-install Python packages. |
 | `Requested format is not available` | Change quality from a specific resolution to "Best" — livestreams have limited format options. |
 | JS runtime warning | Install deno (see Prerequisites). Not strictly required but recommended. |
 | Segments are empty / 0 bytes | The stream may have ended, or the URL is not a live stream. Use **Fetch Info** to check. |

@@ -42,6 +42,16 @@ def test_capture_and_trim_commands_keep_overlap_duration_explicit():
         "make_zero",
         "final.mp4",
     ]
+    native_command = build_capture_command(
+        ["yt-dlp"],
+        "https://youtu.be/example",
+        "native.mp4",
+        "Best",
+        180,
+        use_native_segmenter=True,
+    )
+    assert native_command[native_command.index("--downloader") + 1] == "native"
+    assert "--downloader-args" not in native_command
 
 
 def test_recording_session_round_trips_atomically(tmp_path):
