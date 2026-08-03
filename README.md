@@ -40,6 +40,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Super Chat Chapters** | Optional Audio Only mode captures YouTube live-chat paid messages, keeps the JSON sidecar, and embeds them as chapters in `.m4a` segments |
 | **Headless CLI** | Runs the same recorder without a window for NAS/server use, including resume, scheduling, subtitles, native fragments, and disk thresholds |
 | **Channel Watcher** | Polls a channel's public `/live` page and starts the recorder when yt-dlp reports a live video |
+| **Webhook Notifications** | CLI can POST Discord-compatible segment, error, stop, and stream-end events to one or more webhook URLs |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -122,6 +123,8 @@ Run it with `python yt_livestream_cli.py --queue-file queue.json`. The queue adv
 To wait for a channel to go live, use `python yt_livestream_cli.py --watch-channel https://www.youtube.com/@creator --poll-seconds 60`. Add `--watch-timeout 3600` for a bounded wait; omit it to keep watching until interrupted.
 
 For recurring captures, pass a standard five-field local cron expression, such as `python yt_livestream_cli.py URL --cron "0 20 * * 2" --cron-count 4`. Leave `--cron-count` at its default `0` to continue indefinitely; each occurrence runs through the normal retry, resume, manifest, and disk-safety paths.
+
+Add `--webhook-url https://...` to receive notifications. Repeat the option for multiple endpoints; delivery failures are logged as warnings and never interrupt recording.
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 

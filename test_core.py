@@ -11,6 +11,7 @@ from yt_livestream_core import (
     build_channel_watch_command,
     build_embed_chapters_command,
     build_live_chat_command,
+    build_notification_payload,
     build_trim_command,
     chapter_events_for_segment,
     format_ffmetadata_chapters,
@@ -85,6 +86,13 @@ def test_cron_parser_finds_next_weekday_occurrence_and_rejects_bad_syntax():
         assert "five fields" in str(exc)
     else:
         raise AssertionError("invalid cron expression was accepted")
+
+
+def test_notification_payload_is_discord_compatible_and_structured():
+    payload = build_notification_payload("segment_complete", "Segment saved", {"segment": 2, "path": "capture.m4a"})
+    assert payload["content"] == "Segment saved"
+    assert payload["embeds"][0]["title"] == "Segment Complete"
+    assert {field["name"] for field in payload["embeds"][0]["fields"]} == {"segment", "path"}
 
 
 def test_recording_session_round_trips_atomically(tmp_path):

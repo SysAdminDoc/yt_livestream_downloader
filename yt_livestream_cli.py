@@ -13,11 +13,14 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from yt_livestream_core import (
     APP_NAME,
     APP_VERSION,
     build_channel_watch_command,
+    build_notification_payload,
     load_queue_items,
     load_session,
     next_cron_datetime,
@@ -41,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch-timeout", type=int, default=0, metavar="N", help="Stop watching after N seconds (0 means forever)")
     parser.add_argument("--cron", metavar="EXPR", help="Recurring five-field local cron schedule")
     parser.add_argument("--cron-count", type=int, default=0, metavar="N", help="Number of cron occurrences (0 means forever)")
+    parser.add_argument("--webhook-url", action="append", dest="webhook_urls", default=[], help="POST segment and stream events here; repeat for multiple endpoints")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
     parser.add_argument("--quality", choices=QUALITY_CHOICES, default="Best")
@@ -104,6 +108,7 @@ def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace
         "warn_free_gb",
         "pause_free_gb",
         "start_at",
+        "webhook_urls",
     ):
         if key in item:
             values[key] = item[key]
@@ -225,6 +230,24 @@ def _run_cron(args: argparse.Namespace) -> int:
     return 0
 
 
+def _send_webhooks(urls: list[str], event: str, message: str, fields: dict[str, object]) -> None:
+    if not urls:
+        return
+    payload = json.dumps(build_notification_payload(event, message, fields)).encode("utf-8")
+    for target in urls:
+        try:
+            request = urllib_request.Request(
+                target,
+                data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "YT-Livestream-Downloader"},
+                method="POST",
+            )
+            with urllib_request.urlopen(request, timeout=15):
+                pass
+        except (OSError, urllib_error.URLError) as exc:
+            print(f"webhook warning: delivery failed ({type(exc).__name__})", file=sys.stderr, flush=True)
+
+
 def run(args: argparse.Namespace) -> int:
     if args.cron:
         return _run_cron(args)
@@ -270,7 +293,7 @@ def run(args: argparse.Namespace) -> int:
     from yt_livestream_downloader import SegmentDownloader
 
     app = QCoreApplication(sys.argv)
-    holder = {"worker": None, "exit_code": 0, "timer": None}
+    holder = {"worker": None, "exit_code": 0, "timer": None, "segments": 0, "stopping": False}
 
     def stop_handler(_signum, _frame):
         worker = holder["worker"]
@@ -279,6 +302,7 @@ def run(args: argparse.Namespace) -> int:
             app.quit()
         else:
             print("Stopping after active captures finalize...", flush=True)
+            holder["stopping"] = True
             worker.request_stop()
 
     def start_worker():
@@ -301,11 +325,30 @@ def run(args: argparse.Namespace) -> int:
         holder["worker"] = worker
         worker.log_message.connect(lambda message: print(message, flush=True))
         worker.status_update.connect(lambda message: print(f"[status] {message}", flush=True))
-        worker.segment_complete.connect(
-            lambda filepath, size: print(f"[saved] {filepath} ({size / (1024 * 1024):.1f} MB)", flush=True)
-        )
-        worker.error.connect(lambda message: (print(message, file=sys.stderr, flush=True), holder.__setitem__("exit_code", 1)))
-        worker.finished_all.connect(app.quit)
+        def on_segment_complete(filepath, size):
+            holder["segments"] += 1
+            print(f"[saved] {filepath} ({size / (1024 * 1024):.1f} MB)", flush=True)
+            _send_webhooks(
+                args.webhook_urls,
+                "segment_complete",
+                f"Segment {holder['segments']} saved: {os.path.basename(filepath)}",
+                {"url": args.url, "path": filepath, "size_bytes": size, "segment": holder["segments"]},
+            )
+
+        def on_error(message):
+            print(message, file=sys.stderr, flush=True)
+            holder["exit_code"] = 1
+            _send_webhooks(args.webhook_urls, "error", "Recording session failed.", {"url": args.url, "error": message})
+
+        def on_finished():
+            event = "session_stopped" if holder["stopping"] else ("error" if holder["exit_code"] else "stream_end")
+            message = "Recording session stopped." if holder["stopping"] else "Recording session ended."
+            _send_webhooks(args.webhook_urls, event, message, {"url": args.url, "segments": holder["segments"]})
+            app.quit()
+
+        worker.segment_complete.connect(on_segment_complete)
+        worker.error.connect(on_error)
+        worker.finished_all.connect(on_finished)
         worker.start()
 
     signal.signal(signal.SIGINT, stop_handler)

@@ -290,6 +290,27 @@ def next_cron_datetime(expression: str, now: datetime | None = None) -> datetime
     raise ValueError("cron expression has no occurrence within the next year")
 
 
+def build_notification_payload(event: str, message: str, fields: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Build a Discord-compatible payload that also remains useful to generic webhooks."""
+
+    embed_fields = [
+        {"name": str(key), "value": str(value), "inline": True}
+        for key, value in (fields or {}).items()
+        if value is not None and str(value)
+    ]
+    return {
+        "content": message,
+        "embeds": [
+            {
+                "title": str(event).replace("_", " ").title(),
+                "description": message,
+                "fields": embed_fields,
+                "timestamp": utc_now(),
+            }
+        ],
+    }
+
+
 def _text_value(value: Any) -> str:
     if isinstance(value, str):
         return value
