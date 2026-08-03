@@ -38,6 +38,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Integrity Manifest** | Writes an atomic `.yt_livestream_manifest.json` with each segment's size, SHA-256 checksum, quality, and partial status |
 | **Native DASH Capture** | Optional yt-dlp native fragment mode for DASH streams; automatically falls back to ffmpeg when a provider exposes an unsupported HLS live stream |
 | **Super Chat Chapters** | Optional Audio Only mode captures YouTube live-chat paid messages, keeps the JSON sidecar, and embeds them as chapters in `.m4a` segments |
+| **Headless CLI** | Runs the same recorder without a window for NAS/server use, including resume, scheduling, subtitles, native fragments, and disk thresholds |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -91,6 +92,18 @@ Without a JS runtime, yt-dlp may display a warning and some formats could be una
 6. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
 7. Click **Stop** at any time — the current partial segment is saved
 8. **Double-click** any segment in the list to play it
+
+### Headless CLI
+
+The headless entry point uses the same segmented recorder and never creates a window:
+
+```bash
+python yt_livestream_cli.py "https://www.youtube.com/watch?v=..." \
+  --output ./captures --segment-minutes 30 --quality "Audio Only" \
+  --resume --superchat-chapters
+```
+
+Use `python yt_livestream_cli.py --help` for the complete option list. `--start-at` accepts a local ISO timestamp, and `Ctrl+C` requests a clean partial-segment finalization.
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 
