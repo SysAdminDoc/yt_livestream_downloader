@@ -91,6 +91,7 @@ from yt_livestream_core import (
     safe_filename,
     video_chapter_events,
 )
+from yt_livestream_postprocess import PostProcessError, run_postprocess
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -513,6 +514,41 @@ class StreamInfoWorker(QThread):
             self.error.emit("Stream info fetch timed out")
         except Exception as e:
             self.error.emit(str(e))
+
+
+class PostProcessWorker(QThread):
+    """Run optional ffmpeg output processing without blocking the GUI."""
+
+    log_message = pyqtSignal(str)
+    error = pyqtSignal(str)
+    finished_output = pyqtSignal(str)
+
+    def __init__(self, paths, output_dir, quality, prefix, concat, h265, loudnorm, parent=None):
+        super().__init__(parent)
+        self.paths = list(paths)
+        self.output_dir = output_dir
+        self.quality = quality
+        self.prefix = prefix
+        self.concat = concat
+        self.h265 = h265
+        self.loudnorm = loudnorm
+
+    def run(self):
+        try:
+            output_path = run_postprocess(
+                self.paths,
+                self.output_dir,
+                self.quality,
+                self.prefix,
+                concat=self.concat,
+                h265=self.h265,
+                loudnorm=self.loudnorm,
+                log=self.log_message.emit,
+            )
+            self.finished_output.emit(str(output_path) if output_path else "")
+        except PostProcessError as exc:
+            self.error.emit(str(exc))
+            self.finished_output.emit("")
 
 
 # ──────────────────────────────────────────────
@@ -1395,6 +1431,7 @@ class MainWindow(QMainWindow):
         self.resize(1220, 860)
         self.worker = None
         self.info_worker = None
+        self.postprocess_worker = None
         self._schedule_timer = QTimer(self)
         self._schedule_timer.timeout.connect(self._check_scheduled_start)
         self._elapsed_timer = QTimer(self)
@@ -1671,6 +1708,15 @@ class MainWindow(QMainWindow):
         self.chapter_keywords_input.setPlaceholderText("milestone, giveaway (optional)")
         self.chapter_keywords_input.setToolTip("Comma-separated live-chat words that become chapter marks.")
         sg.addWidget(self.chapter_keywords_input, 11, 3)
+        self.concat_check = QCheckBox("Auto-concat at stream end")
+        self.concat_check.setToolTip("Join completed segments into one file after a normal stream end.")
+        sg.addWidget(self.concat_check, 12, 0, 1, 2)
+        self.h265_check = QCheckBox("H.265 output")
+        self.h265_check.setToolTip("Transcode the concatenated video to H.265 after recording.")
+        sg.addWidget(self.h265_check, 12, 2, 1, 2)
+        self.loudnorm_check = QCheckBox("Two-pass loudnorm")
+        self.loudnorm_check.setToolTip("Normalize final audio to -16 LUFS with ffmpeg's measured two-pass filter.")
+        sg.addWidget(self.loudnorm_check, 13, 0, 1, 2)
 
         sg.setColumnStretch(1, 1)
         layout.addWidget(stream_group)
@@ -1818,6 +1864,9 @@ class MainWindow(QMainWindow):
         self.superchat_check.toggled.connect(self._refresh_descriptions)
         self.subtitle_check.toggled.connect(self._refresh_descriptions)
         self.chapter_keywords_input.textChanged.connect(self._refresh_descriptions)
+        self.concat_check.toggled.connect(self._refresh_descriptions)
+        self.h265_check.toggled.connect(self._refresh_descriptions)
+        self.loudnorm_check.toggled.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1839,6 +1888,12 @@ class MainWindow(QMainWindow):
             self.subtitle_check.setChecked(True)
         if c.get('chapter_keywords'):
             self.chapter_keywords_input.setText(c['chapter_keywords'])
+        if c.get('auto_concat'):
+            self.concat_check.setChecked(True)
+        if c.get('h265_output'):
+            self.h265_check.setChecked(True)
+        if c.get('loudnorm'):
+            self.loudnorm_check.setChecked(True)
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -1852,6 +1907,9 @@ class MainWindow(QMainWindow):
             'superchat_chapters': self.superchat_check.isChecked(),
             'automatic_subtitles': self.subtitle_check.isChecked(),
             'chapter_keywords': self.chapter_keywords_input.text().strip(),
+            'auto_concat': self.concat_check.isChecked(),
+            'h265_output': self.h265_check.isChecked(),
+            'loudnorm': self.loudnorm_check.isChecked(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -1921,6 +1979,15 @@ class MainWindow(QMainWindow):
         self.superchat_check.setEnabled(quality == "Audio Only" and not self._session_locked)
         subtitle_phrase = " Automatic subtitles are written beside each segment." if self.subtitle_check.isChecked() else ""
         keyword_phrase = " Chapter marks are also written for matching live-chat keywords." if self.chapter_keywords_input.text().strip() else ""
+        self.h265_check.setEnabled(quality != "Audio Only" and not self._session_locked)
+        pipeline_options = []
+        if self.concat_check.isChecked():
+            pipeline_options.append("concat")
+        if self.h265_check.isChecked() and quality != "Audio Only":
+            pipeline_options.append("H.265")
+        if self.loudnorm_check.isChecked():
+            pipeline_options.append("loudnorm")
+        pipeline_phrase = f" Post-process: {', '.join(pipeline_options)}." if pipeline_options else ""
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
@@ -1928,6 +1995,7 @@ class MainWindow(QMainWindow):
             f"{superchat_phrase}"
             f"{subtitle_phrase}"
             f"{keyword_phrase}"
+            f"{pipeline_phrase}"
         )
         self.capture_summary_label.setText(capture_summary)
         self.hero_summary_label.setText(capture_summary)
@@ -1976,8 +2044,9 @@ class MainWindow(QMainWindow):
         self.fetch_info_btn.setEnabled(
             url_present and self._ytdlp_ok and not preview_busy and not self._session_locked
         )
+        postprocess_busy = self.postprocess_worker is not None and self.postprocess_worker.isRunning()
         self.start_btn.setEnabled(
-            url_present and self._ytdlp_ok and self._ffmpeg_ok and not self._session_locked
+            url_present and self._ytdlp_ok and self._ffmpeg_ok and not self._session_locked and not postprocess_busy
         )
         self.stop_btn.setEnabled(self._session_locked)
 
@@ -2398,6 +2467,9 @@ class MainWindow(QMainWindow):
         self.superchat_check.setEnabled(not recording and self.quality_combo.currentText() == "Audio Only")
         self.subtitle_check.setEnabled(not recording)
         self.chapter_keywords_input.setEnabled(not recording)
+        self.concat_check.setEnabled(not recording)
+        self.h265_check.setEnabled(not recording and self.quality_combo.currentText() != "Audio Only")
+        self.loudnorm_check.setEnabled(not recording)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):
@@ -2442,6 +2514,63 @@ class MainWindow(QMainWindow):
     def _on_finished(self):
         self._set_recording_state(False)
         self._elapsed_timer.stop()
+        self.worker = None
+        if not self._session_error and not self._user_stopped and self._postprocess_requested():
+            self._start_postprocess()
+            return
+        self._complete_session()
+
+    def _postprocess_requested(self):
+        quality = self.quality_combo.currentText()
+        return bool(
+            self._segment_paths
+            and (
+                self.concat_check.isChecked()
+                or self.loudnorm_check.isChecked()
+                or (self.h265_check.isChecked() and quality != "Audio Only")
+            )
+        )
+
+    def _start_postprocess(self):
+        quality = self.quality_combo.currentText()
+        prefix = safe_filename(self._stream_info.get("title", "")) if self._stream_info else ""
+        self.postprocess_worker = PostProcessWorker(
+            self._segment_paths,
+            self.output_input.text().strip() or self._default_output,
+            quality,
+            prefix,
+            self.concat_check.isChecked(),
+            self.h265_check.isChecked() and quality != "Audio Only",
+            self.loudnorm_check.isChecked(),
+            self,
+        )
+        self.postprocess_worker.log_message.connect(lambda message: self._log(f"Post-process: {message}"))
+        self.postprocess_worker.error.connect(self._on_postprocess_error)
+        self.postprocess_worker.finished_output.connect(self._on_postprocess_finished)
+        self._set_banner_state(
+            "Processing",
+            "Finalizing the combined output",
+            "Completed segments are being concatenated and any selected transcode or loudnorm pass is running.",
+            "info",
+        )
+        self._set_state_value("Processing", "info")
+        self._refresh_action_availability()
+        self.postprocess_worker.start()
+
+    def _on_postprocess_error(self, message):
+        self._session_error = True
+        self._log(f"ERROR: Post-processing failed: {message}")
+        self._set_banner_state("Error", "Post-processing needs attention", message, "danger")
+        self._set_state_value("Error", "danger")
+
+    def _on_postprocess_finished(self, output_path):
+        if output_path:
+            self._log(f"Post-process output: {output_path}")
+        self.postprocess_worker = None
+        self._refresh_action_availability()
+        self._complete_session()
+
+    def _complete_session(self):
         total_summary = f"{self._segment_count} segment{'s' if self._segment_count != 1 else ''}, {human_bytes(self._total_bytes)} total"
         if self._session_error:
             self._set_banner_state(
@@ -2471,7 +2600,6 @@ class MainWindow(QMainWindow):
             self._set_state_value("Done", "success")
             self.statusBar().showMessage(f"Done - {total_summary}")
         self._log("Recording session ended.")
-        self.worker = None
         self._user_stopped = False
         self._refresh_resume_state()
 

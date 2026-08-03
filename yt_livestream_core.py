@@ -139,6 +139,105 @@ def build_trim_command(
     ]
 
 
+def format_concat_file_list(paths: Iterable[str | os.PathLike[str]]) -> str:
+    """Format paths for ffmpeg's concat demuxer list file."""
+
+    lines = []
+    for path in paths:
+        value = os.fspath(path).replace("\\", "/").replace("'", "'\\''")
+        lines.append(f"file '{value}'")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def build_concat_command(
+    ffmpeg_path: str,
+    list_path: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+) -> list[str]:
+    return [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        os.fspath(list_path),
+        "-c",
+        "copy",
+        os.fspath(output_path),
+    ]
+
+
+def build_loudnorm_analysis_command(ffmpeg_path: str, input_path: str | os.PathLike[str]) -> list[str]:
+    return [
+        ffmpeg_path,
+        "-hide_banner",
+        "-i",
+        os.fspath(input_path),
+        "-af",
+        "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json",
+        "-f",
+        "null",
+        os.devnull,
+    ]
+
+
+def parse_loudnorm_measurements(output: str) -> dict[str, str] | None:
+    """Extract the JSON measurement object emitted by loudnorm's first pass."""
+
+    required = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+    for match in re.finditer(r"\{[^{}]*\}", str(output), re.DOTALL):
+        try:
+            payload = json.loads(match.group(0))
+        except ValueError:
+            continue
+        if isinstance(payload, Mapping) and all(key in payload for key in required):
+            return {key: str(payload[key]) for key in required}
+    return None
+
+
+def build_postprocess_command(
+    ffmpeg_path: str,
+    input_path: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+    *,
+    h265: bool = False,
+    loudnorm_measurements: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Build the final transcode command after concat and optional loudnorm analysis."""
+
+    command = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        os.fspath(input_path),
+        "-map",
+        "0",
+    ]
+    if loudnorm_measurements:
+        filter_value = (
+            "loudnorm=I=-16:TP=-1.5:LRA=11:"
+            f"measured_I={loudnorm_measurements['input_i']}:"
+            f"measured_TP={loudnorm_measurements['input_tp']}:"
+            f"measured_LRA={loudnorm_measurements['input_lra']}:"
+            f"measured_thresh={loudnorm_measurements['input_thresh']}:"
+            f"offset={loudnorm_measurements['target_offset']}:linear=true:print_format=summary"
+        )
+        command.extend(["-af", filter_value])
+    command.extend(["-c:v", "libx265" if h265 else "copy"])
+    if h265:
+        command.extend(["-crf", "23", "-preset", "medium"])
+    command.extend(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", os.fspath(output_path)])
+    return command
+
+
 def build_live_chat_command(
     ytdlp_cmd: Sequence[str],
     url: str,

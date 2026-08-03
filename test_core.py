@@ -9,18 +9,23 @@ from yt_livestream_core import (
     atomic_write_json,
     build_capture_command,
     build_channel_watch_command,
+    build_concat_command,
+    build_loudnorm_analysis_command,
+    build_postprocess_command,
     build_embed_chapters_command,
     build_live_chat_command,
     build_notification_payload,
     build_trim_command,
     chapter_events_for_segment,
     format_ffmetadata_chapters,
+    format_concat_file_list,
     load_session,
     load_queue_items,
     parse_superchat_events,
     parse_progress_line,
     parse_channel_live_result,
     parse_milestone_events,
+    parse_loudnorm_measurements,
     next_cron_datetime,
     parse_cron_expression,
     quality_fallback_ladder,
@@ -99,6 +104,21 @@ def test_notification_payload_is_discord_compatible_and_structured():
     assert payload["content"] == "Segment saved"
     assert payload["embeds"][0]["title"] == "Segment Complete"
     assert {field["name"] for field in payload["embeds"][0]["fields"]} == {"segment", "path"}
+
+
+def test_postprocess_commands_cover_concat_h265_and_two_pass_loudnorm():
+    assert format_concat_file_list([r"C:\captures\one.mp4", "two.mp4"]) == "file 'C:/captures/one.mp4'\nfile 'two.mp4'\n"
+    concat = build_concat_command("ffmpeg", "concat.txt", "joined.mp4")
+    assert concat[concat.index("-f") + 1] == "concat"
+    analysis = build_loudnorm_analysis_command("ffmpeg", "joined.mp4")
+    assert "loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json" in analysis
+    measurements = parse_loudnorm_measurements(
+        'noise\n{"input_i":"-20.0","input_tp":"-1.0","input_lra":"5.0","input_thresh":"-30.0","target_offset":"0.1"}'
+    )
+    assert measurements["input_i"] == "-20.0"
+    final = build_postprocess_command("ffmpeg", "joined.mp4", "final.mp4", h265=True, loudnorm_measurements=measurements)
+    assert "libx265" in final
+    assert any(argument.startswith("loudnorm=I=-16") for argument in final)
 
 
 def test_recording_session_round_trips_atomically(tmp_path):

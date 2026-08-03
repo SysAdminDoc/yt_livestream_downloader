@@ -43,6 +43,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Webhook Notifications** | CLI can POST Discord-compatible segment, error, stop, and stream-end events to one or more webhook URLs |
 | **Automatic Subtitles** | Optional yt-dlp automatic subtitle capture is kept as a companion sidecar beside each finalized segment |
 | **Chapter Marks** | Matching live-chat keywords and yt-dlp-returned video chapters are preserved as an `.ffmeta` chapter-mark file; Audio Only can embed them |
+| **Post-process Pipeline** | Optional normal-end concat, H.265 transcode, and two-pass -16 LUFS loudnorm run off the GUI or CLI without changing the original segments |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -129,6 +130,8 @@ To wait for a channel to go live, use `python yt_livestream_cli.py --watch-chann
 For recurring captures, pass a standard five-field local cron expression, such as `python yt_livestream_cli.py URL --cron "0 20 * * 2" --cron-count 4`. Leave `--cron-count` at its default `0` to continue indefinitely; each occurrence runs through the normal retry, resume, manifest, and disk-safety paths.
 
 Add `--webhook-url https://...` to receive notifications. Repeat the option for multiple endpoints; delivery failures are logged as warnings and never interrupt recording. Use `--chapter-keyword milestone` (repeatable) for the same keyword chapter marks in headless mode.
+
+Use `--concat` to join completed segments at normal stream end, `--h265` to produce a libx265 video output, and `--loudnorm` to run measured two-pass normalization. The GUI exposes the same choices. Original segment files and their manifest remain unchanged.
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 

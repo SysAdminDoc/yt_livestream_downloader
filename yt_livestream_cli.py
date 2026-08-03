@@ -26,6 +26,7 @@ from yt_livestream_core import (
     next_cron_datetime,
     parse_channel_live_result,
 )
+from yt_livestream_postprocess import PostProcessError, run_postprocess
 
 
 DEFAULT_OUTPUT = Path.home() / "Downloads" / "YT_Livestreams"
@@ -45,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cron", metavar="EXPR", help="Recurring five-field local cron schedule")
     parser.add_argument("--cron-count", type=int, default=0, metavar="N", help="Number of cron occurrences (0 means forever)")
     parser.add_argument("--webhook-url", action="append", dest="webhook_urls", default=[], help="POST segment and stream events here; repeat for multiple endpoints")
+    parser.add_argument("--concat", action="store_true", help="Concatenate completed segments when the stream ends")
+    parser.add_argument("--h265", action="store_true", help="Transcode the concatenated video to H.265")
+    parser.add_argument("--loudnorm", action="store_true", help="Run two-pass EBU loudness normalization on the final output")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
     parser.add_argument("--quality", choices=QUALITY_CHOICES, default="Best")
@@ -111,6 +115,9 @@ def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace
         "pause_free_gb",
         "start_at",
         "webhook_urls",
+        "concat",
+        "h265",
+        "loudnorm",
     ):
         if key in item:
             values[key] = item[key]
@@ -250,6 +257,26 @@ def _send_webhooks(urls: list[str], event: str, message: str, fields: dict[str, 
             print(f"webhook warning: delivery failed ({type(exc).__name__})", file=sys.stderr, flush=True)
 
 
+def _postprocess_segments(args: argparse.Namespace, paths: list[str]) -> int:
+    if not paths or not (args.concat or args.h265 or args.loudnorm):
+        return 0
+    try:
+        output_path = run_postprocess(
+            paths,
+            args.output,
+            args.quality,
+            args.prefix,
+            concat=args.concat,
+            h265=args.h265,
+            loudnorm=args.loudnorm,
+            log=lambda message: print(f"[postprocess] {message}", flush=True),
+        )
+        return 0
+    except PostProcessError as exc:
+        print(f"[postprocess] failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+
+
 def run(args: argparse.Namespace) -> int:
     if args.cron:
         return _run_cron(args)
@@ -278,6 +305,9 @@ def run(args: argparse.Namespace) -> int:
     if args.superchat_chapters and args.quality != "Audio Only":
         print("error: --superchat-chapters requires --quality 'Audio Only'", file=sys.stderr)
         return 2
+    if args.h265 and args.quality == "Audio Only":
+        print("error: --h265 requires a video quality", file=sys.stderr)
+        return 2
 
     try:
         start_at = _parse_start_at(args.start_at)
@@ -295,7 +325,7 @@ def run(args: argparse.Namespace) -> int:
     from yt_livestream_downloader import SegmentDownloader
 
     app = QCoreApplication(sys.argv)
-    holder = {"worker": None, "exit_code": 0, "timer": None, "segments": 0, "stopping": False}
+    holder = {"worker": None, "exit_code": 0, "timer": None, "segments": 0, "stopping": False, "saved_paths": []}
 
     def stop_handler(_signum, _frame):
         worker = holder["worker"]
@@ -330,6 +360,7 @@ def run(args: argparse.Namespace) -> int:
         worker.status_update.connect(lambda message: print(f"[status] {message}", flush=True))
         def on_segment_complete(filepath, size):
             holder["segments"] += 1
+            holder["saved_paths"].append(filepath)
             print(f"[saved] {filepath} ({size / (1024 * 1024):.1f} MB)", flush=True)
             _send_webhooks(
                 args.webhook_urls,
@@ -344,6 +375,10 @@ def run(args: argparse.Namespace) -> int:
             _send_webhooks(args.webhook_urls, "error", "Recording session failed.", {"url": args.url, "error": message})
 
         def on_finished():
+            if not holder["stopping"] and not holder["exit_code"]:
+                postprocess_result = _postprocess_segments(args, holder["saved_paths"])
+                if postprocess_result:
+                    holder["exit_code"] = postprocess_result
             event = "session_stopped" if holder["stopping"] else ("error" if holder["exit_code"] else "stream_end")
             message = "Recording session stopped." if holder["stopping"] else "Recording session ended."
             _send_webhooks(args.webhook_urls, event, message, {"url": args.url, "segments": holder["segments"]})
