@@ -45,3 +45,9 @@ def test_queue_item_overrides_are_applied_to_a_base_namespace():
     assert queued.url == "https://youtu.be/queued"
     assert queued.quality == "Audio Only"
     assert queued.start_at == "2026-08-03T20:00:00"
+
+
+def test_watch_parser_accepts_polling_controls():
+    args = build_parser().parse_args(["--watch-channel", "https://www.youtube.com/@creator", "--poll-seconds", "30"])
+    assert args.watch_channel.endswith("@creator")
+    assert args.poll_seconds == 30

@@ -162,6 +162,55 @@ def build_live_chat_command(
     ]
 
 
+def build_channel_watch_command(ytdlp_cmd: Sequence[str], channel_url: str) -> list[str]:
+    """Build a lightweight poll command for a channel's public live tab."""
+
+    target = channel_url.rstrip("/")
+    if not target.endswith("/live"):
+        target = f"{target}/live"
+    return [
+        *ytdlp_cmd,
+        "--flat-playlist",
+        "--playlist-end",
+        "1",
+        "--dump-single-json",
+        "--skip-download",
+        target,
+    ]
+
+
+def parse_channel_live_result(source: Any) -> str | None:
+    """Return a live video's watch URL from a yt-dlp channel poll payload."""
+
+    payload = source
+    if isinstance(source, (str, os.PathLike)):
+        try:
+            with open(source, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError):
+            return None
+    if isinstance(payload, Mapping):
+        entries = payload.get("entries")
+        candidates = entries if isinstance(entries, list) else [payload]
+    elif isinstance(payload, list):
+        candidates = payload
+    else:
+        return None
+    for entry in candidates:
+        if not isinstance(entry, Mapping):
+            continue
+        status = str(entry.get("live_status") or entry.get("liveStatus") or "").lower()
+        if not entry.get("is_live") and status not in {"is_live", "live"}:
+            continue
+        url = entry.get("webpage_url") or entry.get("url")
+        video_id = entry.get("id") or entry.get("videoId")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            return url
+        if isinstance(video_id, str) and video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
+    return None
+
+
 def _text_value(value: Any) -> str:
     if isinstance(value, str):
         return value

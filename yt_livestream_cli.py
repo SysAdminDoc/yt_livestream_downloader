@@ -8,11 +8,20 @@ import multiprocessing
 import os
 import signal
 import shutil
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
-from yt_livestream_core import APP_NAME, APP_VERSION, load_queue_items, load_session
+from yt_livestream_core import (
+    APP_NAME,
+    APP_VERSION,
+    build_channel_watch_command,
+    load_queue_items,
+    load_session,
+    parse_channel_live_result,
+)
 
 
 DEFAULT_OUTPUT = Path.home() / "Downloads" / "YT_Livestreams"
@@ -26,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("url", nargs="?", help="YouTube livestream URL")
     parser.add_argument("--queue-file", type=Path, help="JSON queue with one URL and optional per-stream overrides per item")
+    parser.add_argument("--watch-channel", help="Poll a public channel URL until a live video appears")
+    parser.add_argument("--poll-seconds", type=int, default=60, metavar="N", help="Channel poll interval")
+    parser.add_argument("--watch-timeout", type=int, default=0, metavar="N", help="Stop watching after N seconds (0 means forever)")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
     parser.add_argument("--quality", choices=QUALITY_CHOICES, default="Best")
@@ -113,7 +125,61 @@ def _run_queue(args: argparse.Namespace) -> int:
     return 0
 
 
+def _watch_ytdlp_command() -> list[str]:
+    path = shutil.which("yt-dlp")
+    return [path] if path else [sys.executable, "-m", "yt_dlp"]
+
+
+def _run_watch(args: argparse.Namespace) -> int:
+    if args.poll_seconds < 5:
+        print("error: --poll-seconds must be at least 5", file=sys.stderr)
+        return 2
+    if args.watch_timeout < 0:
+        print("error: --watch-timeout cannot be negative", file=sys.stderr)
+        return 2
+    command = _watch_ytdlp_command()
+    deadline = time.monotonic() + args.watch_timeout if args.watch_timeout else None
+    print(f"Watching {args.watch_channel} for a live stream...", flush=True)
+    while deadline is None or time.monotonic() < deadline:
+        try:
+            result = subprocess.run(
+                build_channel_watch_command(command, args.watch_channel),
+                capture_output=True,
+                text=True,
+                timeout=min(60, max(10, args.poll_seconds)),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                live_url = parse_channel_live_result(result.stdout)
+                if live_url:
+                    print(f"Live stream found: {live_url}", flush=True)
+                    values = vars(args).copy()
+                    values["url"] = live_url
+                    values["watch_channel"] = None
+                    values["watch_timeout"] = 0
+                    return run(argparse.Namespace(**values))
+            elif result.stderr.strip():
+                print(f"watch warning: {result.stderr.strip().splitlines()[-1]}", file=sys.stderr, flush=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"watch warning: {exc}", file=sys.stderr, flush=True)
+        remaining = args.poll_seconds
+        while remaining > 0:
+            if deadline is not None:
+                remaining = min(remaining, max(0, int(deadline - time.monotonic())))
+            if remaining <= 0:
+                break
+            time.sleep(min(1, remaining))
+            remaining -= 1
+    print("watch timeout reached without a live stream", file=sys.stderr)
+    return 1
+
+
 def run(args: argparse.Namespace) -> int:
+    if args.watch_channel:
+        if args.url or args.queue_file:
+            print("error: --watch-channel cannot be combined with a URL or --queue-file", file=sys.stderr)
+            return 2
+        return _run_watch(args)
     if args.queue_file:
         if args.url:
             print("error: provide either a URL or --queue-file, not both", file=sys.stderr)

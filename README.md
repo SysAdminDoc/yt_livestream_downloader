@@ -39,6 +39,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Native DASH Capture** | Optional yt-dlp native fragment mode for DASH streams; automatically falls back to ffmpeg when a provider exposes an unsupported HLS live stream |
 | **Super Chat Chapters** | Optional Audio Only mode captures YouTube live-chat paid messages, keeps the JSON sidecar, and embeds them as chapters in `.m4a` segments |
 | **Headless CLI** | Runs the same recorder without a window for NAS/server use, including resume, scheduling, subtitles, native fragments, and disk thresholds |
+| **Channel Watcher** | Polls a channel's public `/live` page and starts the recorder when yt-dlp reports a live video |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -117,6 +118,8 @@ For sequential multi-stream capture, pass a JSON queue. Items may override the s
 ```
 
 Run it with `python yt_livestream_cli.py --queue-file queue.json`. The queue advances only after the current stream exits successfully; a failed item stops the queue and returns its non-zero exit code.
+
+To wait for a channel to go live, use `python yt_livestream_cli.py --watch-channel https://www.youtube.com/@creator --poll-seconds 60`. Add `--watch-timeout 3600` for a bounded wait; omit it to keep watching until interrupted.
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 

@@ -11,6 +11,7 @@ All notable changes to yt_livestream_downloader will be documented in this file.
 - Added: optional Audio Only Super Chat capture with retained live-chat JSON and embedded `.m4a` chapters.
 - Added: headless CLI parity for capture, resume, scheduling, subtitles, native fragments, Super Chat chapters, and disk thresholds.
 - Added: JSON-backed sequential CLI queues with per-stream output, quality, schedule, and capture overrides.
+- Added: credential-free channel watcher that polls yt-dlp's public `/live` listing and starts the shared recorder on detection.
 - Fixed: frozen builds no longer recurse into themselves while bootstrapping optional dependencies.
 
 ## [v1.0.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)

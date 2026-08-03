@@ -7,6 +7,7 @@ from yt_livestream_core import (
     RecordingSession,
     atomic_write_json,
     build_capture_command,
+    build_channel_watch_command,
     build_embed_chapters_command,
     build_live_chat_command,
     build_trim_command,
@@ -16,6 +17,7 @@ from yt_livestream_core import (
     load_queue_items,
     parse_superchat_events,
     parse_progress_line,
+    parse_channel_live_result,
     quality_fallback_ladder,
     safe_filename,
 )
@@ -58,6 +60,16 @@ def test_capture_and_trim_commands_keep_overlap_duration_explicit():
     )
     assert native_command[native_command.index("--downloader") + 1] == "native"
     assert "--downloader-args" not in native_command
+
+
+def test_channel_watch_command_and_live_result_parser():
+    command = build_channel_watch_command(["yt-dlp"], "https://www.youtube.com/@creator")
+    assert command[-1] == "https://www.youtube.com/@creator/live"
+    assert "--flat-playlist" in command
+    assert parse_channel_live_result({"entries": [{"id": "abc", "live_status": "is_live"}]}) == (
+        "https://www.youtube.com/watch?v=abc"
+    )
+    assert parse_channel_live_result({"entries": [{"id": "abc", "live_status": "was_live"}]}) is None
 
 
 def test_recording_session_round_trips_atomically(tmp_path):
