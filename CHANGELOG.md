@@ -19,6 +19,7 @@ All notable changes to yt_livestream_downloader will be documented in this file.
 - Added: nonblocking GUI and headless post-process pipeline for concat, H.265, and two-pass loudnorm output.
 - Added: periodic disk guardrails with configurable GUI thresholds and safe partial-segment pause/resume behavior.
 - Added: optional input-free embedded mpv mini-player with graceful missing-dependency fallback.
+- Added: persisted Mocha, Midnight, and Lavender theme variants with an application font-size override.
 - Fixed: frozen builds no longer recurse into themselves while bootstrapping optional dependencies.
 
 ## [v1.0.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)

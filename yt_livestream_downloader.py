@@ -104,7 +104,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QDateTime, QPropertyAnimation, QEasingCurve
 )
-from PyQt6.QtGui import QColor, QIcon, QPalette, QDesktopServices, QPixmap
+from PyQt6.QtGui import QColor, QFont, QIcon, QPalette, QDesktopServices, QPixmap
 from PyQt6.QtCore import QUrl
 
 VERSION = APP_VERSION
@@ -125,6 +125,44 @@ THEME = {
     "warning": "#f2b862",
     "danger": "#ff7b7b",
     "info": "#77d9ff",
+}
+
+THEME_VARIANTS = {
+    "Mocha": dict(THEME),
+    "Midnight": {
+        **THEME,
+        "bg": "#070b14",
+        "surface": "#0d1424",
+        "surface_soft": "#0a101c",
+        "surface_raised": "#111b30",
+        "border": "#1e3352",
+        "border_strong": "#2c4d73",
+        "text": "#edf4ff",
+        "text_soft": "#aabbd8",
+        "text_muted": "#7186aa",
+        "accent": "#8ab4ff",
+        "success": "#6de3a5",
+        "warning": "#f4c06c",
+        "danger": "#ff8a9b",
+        "info": "#78e5ff",
+    },
+    "Lavender": {
+        **THEME,
+        "bg": "#120f1d",
+        "surface": "#1b1729",
+        "surface_soft": "#171321",
+        "surface_raised": "#241e36",
+        "border": "#3b3156",
+        "border_strong": "#594877",
+        "text": "#f8f4ff",
+        "text_soft": "#c8bddf",
+        "text_muted": "#9183aa",
+        "accent": "#c6a7ff",
+        "success": "#78e6b0",
+        "warning": "#f2c27b",
+        "danger": "#ff8fa8",
+        "info": "#86dfff",
+    },
 }
 
 # ──────────────────────────────────────────────
@@ -389,6 +427,37 @@ QScrollBar::handle:vertical { background: rgba(115, 128, 157, 0.45); border-radi
 QScrollBar::handle:vertical:hover { background: rgba(115, 184, 255, 0.5); }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
+
+
+def style_for_theme(name, font_size=13):
+    variant = THEME_VARIANTS.get(name, THEME_VARIANTS["Mocha"])
+    style = DARK_STYLE
+    for key, base_color in THEME_VARIANTS["Mocha"].items():
+        style = style.replace(base_color, variant[key])
+    return re.sub(r"font-size:\s*\d+px", f"font-size: {int(font_size)}px", style)
+
+
+def apply_theme(name, font_size=13):
+    variant = THEME_VARIANTS.get(name, THEME_VARIANTS["Mocha"])
+    THEME.update(variant)
+    app = QApplication.instance()
+    if not app:
+        return
+    app.setStyleSheet(style_for_theme(name, font_size))
+    font = QFont(app.font())
+    font.setPointSize(int(font_size))
+    app.setFont(font)
+    palette = app.palette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(variant["bg"]))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(variant["text"]))
+    palette.setColor(QPalette.ColorRole.Base, QColor(variant["surface_soft"]))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(variant["surface"]))
+    palette.setColor(QPalette.ColorRole.Text, QColor(variant["text"]))
+    palette.setColor(QPalette.ColorRole.Button, QColor(variant["surface_raised"]))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(variant["text"]))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(variant["accent"]))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(variant["bg"]))
+    app.setPalette(palette)
 
 
 # ──────────────────────────────────────────────
@@ -1543,6 +1612,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._restore_settings()
+        self._apply_visual_settings()
         self._check_deps()
         self._sync_segment_state()
         self._set_stream_preview_placeholder()
@@ -1819,6 +1889,22 @@ class MainWindow(QMainWindow):
         self.mini_player_check = QCheckBox("Embedded mpv mini-player")
         self.mini_player_check.setToolTip("Show the live URL in an optional embedded mpv surface without opening another player window.")
         sg.addWidget(self.mini_player_check, 15, 0, 1, 2)
+        theme_label = QLabel("Theme")
+        theme_label.setObjectName("fieldLabel")
+        sg.addWidget(theme_label, 16, 0)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(list(THEME_VARIANTS))
+        self.theme_combo.setFixedWidth(140)
+        sg.addWidget(self.theme_combo, 16, 1)
+        font_label = QLabel("Font size")
+        font_label.setObjectName("fieldLabel")
+        sg.addWidget(font_label, 16, 2, Qt.AlignmentFlag.AlignRight)
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(10, 22)
+        self.font_size_spin.setValue(13)
+        self.font_size_spin.setSuffix(" px")
+        self.font_size_spin.setFixedWidth(120)
+        sg.addWidget(self.font_size_spin, 16, 3)
         warn_disk_label = QLabel("Warn below")
         warn_disk_label.setObjectName("fieldLabel")
         sg.addWidget(warn_disk_label, 14, 0)
@@ -1997,6 +2083,8 @@ class MainWindow(QMainWindow):
         self.pause_disk_spin.valueChanged.connect(self._refresh_descriptions)
         self.mini_player_check.toggled.connect(self._on_mini_player_toggled)
         self.mini_player_check.toggled.connect(self._refresh_descriptions)
+        self.theme_combo.currentTextChanged.connect(self._apply_visual_settings)
+        self.font_size_spin.valueChanged.connect(self._apply_visual_settings)
 
     def _restore_settings(self):
         c = self._config
@@ -2030,6 +2118,10 @@ class MainWindow(QMainWindow):
             self.pause_disk_spin.setValue(float(c['pause_free_gb']))
         if c.get('mini_player'):
             self.mini_player_check.setChecked(True)
+        if c.get('theme') in THEME_VARIANTS:
+            self.theme_combo.setCurrentText(c['theme'])
+        if 'font_size' in c:
+            self.font_size_spin.setValue(int(c['font_size']))
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -2049,6 +2141,8 @@ class MainWindow(QMainWindow):
             'warn_free_gb': self.warn_disk_spin.value(),
             'pause_free_gb': self.pause_disk_spin.value(),
             'mini_player': self.mini_player_check.isChecked(),
+            'theme': self.theme_combo.currentText(),
+            'font_size': self.font_size_spin.value(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -2081,6 +2175,9 @@ class MainWindow(QMainWindow):
                 "A crash-resume state will appear here after the first recording session starts."
             )
         self.resume_check.blockSignals(False)
+
+    def _apply_visual_settings(self, *_args):
+        apply_theme(self.theme_combo.currentText(), self.font_size_spin.value())
 
     def _set_stream_preview_placeholder(
         self,
@@ -2643,6 +2740,8 @@ class MainWindow(QMainWindow):
         self.loudnorm_check.setEnabled(not recording)
         self.warn_disk_spin.setEnabled(not recording)
         self.pause_disk_spin.setEnabled(not recording)
+        self.theme_combo.setEnabled(not recording)
+        self.font_size_spin.setEnabled(not recording)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):
@@ -2821,19 +2920,7 @@ def main():
 
     app.setWindowIcon(branding_icon)
     app.setStyle("Fusion")
-    app.setStyleSheet(DARK_STYLE)
-
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(THEME["bg"]))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor(THEME["text"]))
-    palette.setColor(QPalette.ColorRole.Base, QColor(THEME["surface_soft"]))
-    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(THEME["surface"]))
-    palette.setColor(QPalette.ColorRole.Text, QColor(THEME["text"]))
-    palette.setColor(QPalette.ColorRole.Button, QColor(THEME["surface_raised"]))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor(THEME["text"]))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor(THEME["accent"]))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(THEME["bg"]))
-    app.setPalette(palette)
+    apply_theme("Mocha", 13)
 
     window = MainWindow()
 

@@ -46,6 +46,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Chapter Marks** | Matching live-chat keywords and yt-dlp-returned video chapters are preserved as an `.ffmeta` chapter-mark file; Audio Only can embed them |
 | **Post-process Pipeline** | Optional normal-end concat, H.265 transcode, and two-pass -16 LUFS loudnorm run off the GUI or CLI without changing the original segments |
 | **Embedded Mini-player** | Optional mpv surface inside the GUI for live preview; missing mpv disables only the preview |
+| **Theme + Font Controls** | Persisted Mocha, Midnight, or Lavender palette with a 10-22 px application font override |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -137,6 +138,8 @@ Add `--webhook-url https://...` to receive notifications. Repeat the option for 
 Use `--concat` to join completed segments at normal stream end, `--h265` to produce a libx265 video output, and `--loudnorm` to run measured two-pass normalization. The GUI exposes the same choices. Original segment files and their manifest remain unchanged.
 
 Enable **Embedded mpv mini-player** in the GUI to preview the stream inside the app. It is optional and does not affect capture when mpv is unavailable.
+
+Choose **Theme** and **Font size** in Stream Settings; the selection is applied immediately and saved with the other preferences.
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 
