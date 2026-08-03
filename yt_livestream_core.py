@@ -238,6 +238,22 @@ def build_postprocess_command(
     return command
 
 
+def build_mpv_command(mpv_path: str, url: str, window_id: int) -> list[str]:
+    """Build an input-free embedded mpv command for the optional mini-player."""
+
+    return [
+        mpv_path,
+        "--no-terminal",
+        "--force-window=yes",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--keep-open=no",
+        f"--wid={int(window_id)}",
+        "--",
+        url,
+    ]
+
+
 def build_live_chat_command(
     ytdlp_cmd: Sequence[str],
     url: str,

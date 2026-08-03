@@ -75,6 +75,7 @@ from yt_livestream_core import (
     ManifestStore,
     RecordingSession,
     build_embed_chapters_command,
+    build_mpv_command,
     build_capture_command,
     build_live_chat_command,
     build_trim_command,
@@ -213,6 +214,9 @@ QFrame#summaryCard {
 }
 QFrame#streamInfoCard {
     background-color: #101a28; border: 1px solid #22324a; border-radius: 16px;
+}
+QFrame#miniPlayerFrame {
+    background-color: #050a11; border: 1px solid #22324a; border-radius: 16px;
 }
 QFrame#stateBanner {
     background-color: #0c1522; border: 1px solid #22324a; border-radius: 16px;
@@ -549,6 +553,53 @@ class PostProcessWorker(QThread):
         except PostProcessError as exc:
             self.error.emit(str(exc))
             self.finished_output.emit("")
+
+
+class MiniPlayerController:
+    """Own an optional embedded mpv process without taking focus or input."""
+
+    def __init__(self, log):
+        self._process = None
+        self._log = log
+
+    def start(self, url, window_id):
+        if self._process and self._process.poll() is None:
+            return True
+        mpv_path = shutil.which("mpv")
+        if not mpv_path:
+            self._log("Mini-player unavailable: install mpv and place it on PATH.")
+            return False
+        try:
+            self._process = subprocess.Popen(
+                build_mpv_command(mpv_path, url, window_id),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            self._log("Embedded mpv mini-player started.")
+            return True
+        except OSError as exc:
+            self._process = None
+            self._log(f"Mini-player unavailable: {exc}")
+            return False
+
+    def stop(self):
+        process = self._process
+        self._process = None
+        if not process:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+                process.wait(timeout=3)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────
@@ -1466,6 +1517,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.info_worker = None
         self.postprocess_worker = None
+        self.mini_player = MiniPlayerController(self._log)
         self._schedule_timer = QTimer(self)
         self._schedule_timer.timeout.connect(self._check_scheduled_start)
         self._elapsed_timer = QTimer(self)
@@ -1624,6 +1676,18 @@ class MainWindow(QMainWindow):
         si_layout.addLayout(preview_badges)
         layout.addWidget(self.stream_info_frame)
 
+        self.mini_player_frame = QFrame()
+        self.mini_player_frame.setObjectName("miniPlayerFrame")
+        self.mini_player_frame.setMinimumHeight(220)
+        mini_layout = QVBoxLayout(self.mini_player_frame)
+        mini_layout.setContentsMargins(14, 12, 14, 12)
+        self.mini_player_status = QLabel("Enable Embedded mpv mini-player to preview the live stream here.")
+        self.mini_player_status.setObjectName("helperLabel")
+        self.mini_player_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mini_layout.addWidget(self.mini_player_status)
+        self.mini_player_frame.setVisible(False)
+        layout.addWidget(self.mini_player_frame)
+
         # ── Stream Settings ──
         stream_group = QGroupBox("Stream Settings")
         sg = QGridLayout(stream_group)
@@ -1752,6 +1816,9 @@ class MainWindow(QMainWindow):
         self.loudnorm_check = QCheckBox("Two-pass loudnorm")
         self.loudnorm_check.setToolTip("Normalize final audio to -16 LUFS with ffmpeg's measured two-pass filter.")
         sg.addWidget(self.loudnorm_check, 13, 0, 1, 2)
+        self.mini_player_check = QCheckBox("Embedded mpv mini-player")
+        self.mini_player_check.setToolTip("Show the live URL in an optional embedded mpv surface without opening another player window.")
+        sg.addWidget(self.mini_player_check, 15, 0, 1, 2)
         warn_disk_label = QLabel("Warn below")
         warn_disk_label.setObjectName("fieldLabel")
         sg.addWidget(warn_disk_label, 14, 0)
@@ -1928,6 +1995,8 @@ class MainWindow(QMainWindow):
         self.loudnorm_check.toggled.connect(self._refresh_descriptions)
         self.warn_disk_spin.valueChanged.connect(self._refresh_descriptions)
         self.pause_disk_spin.valueChanged.connect(self._refresh_descriptions)
+        self.mini_player_check.toggled.connect(self._on_mini_player_toggled)
+        self.mini_player_check.toggled.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1959,6 +2028,8 @@ class MainWindow(QMainWindow):
             self.warn_disk_spin.setValue(float(c['warn_free_gb']))
         if 'pause_free_gb' in c:
             self.pause_disk_spin.setValue(float(c['pause_free_gb']))
+        if c.get('mini_player'):
+            self.mini_player_check.setChecked(True)
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -1977,6 +2048,7 @@ class MainWindow(QMainWindow):
             'loudnorm': self.loudnorm_check.isChecked(),
             'warn_free_gb': self.warn_disk_spin.value(),
             'pause_free_gb': self.pause_disk_spin.value(),
+            'mini_player': self.mini_player_check.isChecked(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -2213,6 +2285,28 @@ class MainWindow(QMainWindow):
     def _on_schedule_toggled(self, checked):
         self.schedule_dt.setEnabled(checked and not self._session_locked)
         self._refresh_descriptions()
+
+    def _on_mini_player_toggled(self, checked):
+        self.mini_player_frame.setVisible(checked)
+        if not checked:
+            self.mini_player.stop()
+            self.mini_player_status.setText("Enable Embedded mpv mini-player to preview the live stream here.")
+            return
+        url = self.url_input.text().strip()
+        if url:
+            self._start_mini_player(url)
+        else:
+            self.mini_player_status.setText("Paste a livestream URL to start the embedded preview.")
+
+    def _start_mini_player(self, url):
+        if not self.mini_player_check.isChecked():
+            return
+        self.mini_player_frame.setVisible(True)
+        self.mini_player_status.setText("Starting embedded mpv preview...")
+        if self.mini_player.start(url, int(self.mini_player_frame.winId())):
+            self.mini_player_status.setText("Embedded mpv preview")
+        else:
+            self.mini_player_status.setText("mpv is not available on PATH; recording is unaffected.")
 
     def _on_url_text_changed(self):
         current_url = self.url_input.text().strip()
@@ -2496,6 +2590,7 @@ class MainWindow(QMainWindow):
         self.worker.error.connect(self._on_error)
         self.worker.finished_all.connect(self._on_finished)
         self.worker.start()
+        self._start_mini_player(url)
 
     def _handle_worker_status(self, msg):
         self.statusBar().showMessage(msg)
@@ -2590,6 +2685,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Error - review the activity log")
 
     def _on_finished(self):
+        self.mini_player.stop()
+        self.mini_player_status.setText("Mini-player stopped with the recording session.")
         if self.worker is not None:
             self._session_paused = bool(getattr(self.worker, "paused", False))
         self._set_recording_state(False)
@@ -2701,6 +2798,7 @@ class MainWindow(QMainWindow):
             self._log("Post-processing is still running; close was deferred until ffmpeg exits.")
             event.ignore()
             return
+        self.mini_player.stop()
         event.accept()
 
 

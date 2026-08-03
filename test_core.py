@@ -11,6 +11,7 @@ from yt_livestream_core import (
     build_channel_watch_command,
     build_concat_command,
     build_loudnorm_analysis_command,
+    build_mpv_command,
     build_postprocess_command,
     build_embed_chapters_command,
     build_live_chat_command,
@@ -119,6 +120,13 @@ def test_postprocess_commands_cover_concat_h265_and_two_pass_loudnorm():
     final = build_postprocess_command("ffmpeg", "joined.mp4", "final.mp4", h265=True, loudnorm_measurements=measurements)
     assert "libx265" in final
     assert any(argument.startswith("loudnorm=I=-16") for argument in final)
+
+
+def test_mpv_command_is_embedded_and_disables_default_input_bindings():
+    command = build_mpv_command("mpv", "https://youtu.be/example", 12345)
+    assert "--wid=12345" in command
+    assert "--no-input-default-bindings" in command
+    assert command[-2:] == ["--", "https://youtu.be/example"]
 
 
 def test_recording_session_round_trips_atomically(tmp_path):

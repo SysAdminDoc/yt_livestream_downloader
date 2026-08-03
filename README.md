@@ -45,6 +45,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Automatic Subtitles** | Optional yt-dlp automatic subtitle capture is kept as a companion sidecar beside each finalized segment |
 | **Chapter Marks** | Matching live-chat keywords and yt-dlp-returned video chapters are preserved as an `.ffmeta` chapter-mark file; Audio Only can embed them |
 | **Post-process Pipeline** | Optional normal-end concat, H.265 transcode, and two-pass -16 LUFS loudnorm run off the GUI or CLI without changing the original segments |
+| **Embedded Mini-player** | Optional mpv surface inside the GUI for live preview; missing mpv disables only the preview |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -57,6 +58,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **ffmpeg** | Must be on your system PATH |
 | **yt-dlp** | Auto-installed via pip if missing |
 | **PyQt6** | Auto-installed via pip if missing |
+| **mpv** | Optional; place `mpv` on PATH to enable the embedded mini-player |
 
 ### Installing ffmpeg
 
@@ -133,6 +135,8 @@ For recurring captures, pass a standard five-field local cron expression, such a
 Add `--webhook-url https://...` to receive notifications. Repeat the option for multiple endpoints; delivery failures are logged as warnings and never interrupt recording. Use `--chapter-keyword milestone` (repeatable) for the same keyword chapter marks in headless mode.
 
 Use `--concat` to join completed segments at normal stream end, `--h265` to produce a libx265 video output, and `--loudnorm` to run measured two-pass normalization. The GUI exposes the same choices. Original segment files and their manifest remain unchanged.
+
+Enable **Embedded mpv mini-player** in the GUI to preview the stream inside the app. It is optional and does not affect capture when mpv is unavailable.
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 
