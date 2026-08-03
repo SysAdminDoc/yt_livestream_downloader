@@ -42,6 +42,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Channel Watcher** | Polls a channel's public `/live` page and starts the recorder when yt-dlp reports a live video |
 | **Webhook Notifications** | CLI can POST Discord-compatible segment, error, stop, and stream-end events to one or more webhook URLs |
 | **Automatic Subtitles** | Optional yt-dlp automatic subtitle capture is kept as a companion sidecar beside each finalized segment |
+| **Chapter Marks** | Matching live-chat keywords and yt-dlp-returned video chapters are preserved as an `.ffmeta` chapter-mark file; Audio Only can embed them |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -93,9 +94,10 @@ Without a JS runtime, yt-dlp may display a warning and some formats could be una
 4. **Configure** segment length, quality, and output folder as needed
 5. For **Audio Only**, optionally enable **Super Chat chapters** to retain paid-message timestamps as embedded chapters
 6. Optionally enable **Automatic subtitles** to write subtitle sidecars beside each segment
-7. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
-8. Click **Stop** at any time — the current partial segment is saved
-9. **Double-click** any segment in the list to play it
+7. Optionally enter comma-separated **Chat chapter keywords** such as `milestone, giveaway`
+8. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
+9. Click **Stop** at any time — the current partial segment is saved
+10. **Double-click** any segment in the list to play it
 
 ### Headless CLI
 
@@ -126,7 +128,7 @@ To wait for a channel to go live, use `python yt_livestream_cli.py --watch-chann
 
 For recurring captures, pass a standard five-field local cron expression, such as `python yt_livestream_cli.py URL --cron "0 20 * * 2" --cron-count 4`. Leave `--cron-count` at its default `0` to continue indefinitely; each occurrence runs through the normal retry, resume, manifest, and disk-safety paths.
 
-Add `--webhook-url https://...` to receive notifications. Repeat the option for multiple endpoints; delivery failures are logged as warnings and never interrupt recording.
+Add `--webhook-url https://...` to receive notifications. Repeat the option for multiple endpoints; delivery failures are logged as warnings and never interrupt recording. Use `--chapter-keyword milestone` (repeatable) for the same keyword chapter marks in headless mode.
 
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 

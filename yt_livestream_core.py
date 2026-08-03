@@ -420,6 +420,74 @@ def parse_superchat_events(source: Any) -> list[dict[str, Any]]:
     return sorted(events, key=lambda event: (event["offset_ms"], event["title"]))
 
 
+def parse_milestone_events(source: Any, keywords: Iterable[str]) -> list[dict[str, Any]]:
+    """Extract keyword-matching live-chat messages as chapter events."""
+
+    wanted = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
+    normalized = [(keyword, keyword.casefold()) for keyword in wanted]
+    if not normalized:
+        return []
+    renderer_keys = {
+        "liveChatTextMessageRenderer",
+        "liveChatPaidMessageRenderer",
+        "liveChatTickerPaidMessageItemRenderer",
+        "liveChatMembershipItemRenderer",
+    }
+    events: list[dict[str, Any]] = []
+    seen: set[tuple[int, str, str]] = set()
+    for record in _json_records(source):
+        offset_ms = _first_offset_ms(record)
+        if offset_ms is None:
+            continue
+        for mapping in _walk_mappings(record):
+            for key in renderer_keys.intersection(mapping):
+                renderer = mapping.get(key)
+                if not isinstance(renderer, Mapping):
+                    continue
+                message = _text_value(renderer.get("message") or renderer.get("headerSubtext") or renderer.get("primaryText"))
+                haystack = message.casefold()
+                for keyword, folded in normalized:
+                    if folded not in haystack:
+                        continue
+                    identity = (offset_ms, keyword.casefold(), message)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    events.append(
+                        {
+                            "offset_ms": offset_ms,
+                            "title": f"Milestone — {keyword}",
+                            "message": message,
+                            "keyword": keyword,
+                        }
+                    )
+                    break
+    return sorted(events, key=lambda event: (event["offset_ms"], event["title"]))
+
+
+def video_chapter_events(info: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Normalize yt-dlp's returned chapter list to the shared event format."""
+
+    if not isinstance(info, Mapping) or not isinstance(info.get("chapters"), list):
+        return []
+    events = []
+    for chapter in info["chapters"]:
+        if not isinstance(chapter, Mapping):
+            continue
+        try:
+            start_ms = max(0, int(float(chapter.get("start_time", 0)) * 1000))
+        except (TypeError, ValueError):
+            continue
+        events.append(
+            {
+                "offset_ms": start_ms,
+                "title": str(chapter.get("title") or "Chapter"),
+                "message": "",
+            }
+        )
+    return sorted(events, key=lambda event: event["offset_ms"])
+
+
 def chapter_events_for_segment(
     events: Iterable[Mapping[str, Any]],
     segment_number: int,

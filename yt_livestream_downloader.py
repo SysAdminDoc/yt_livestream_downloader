@@ -84,10 +84,12 @@ from yt_livestream_core import (
     extension_for_quality,
     format_ffmetadata_chapters,
     load_session,
+    parse_milestone_events,
     parse_progress_line,
     parse_superchat_events,
     quality_fallback_ladder,
     safe_filename,
+    video_chapter_events,
 )
 
 from PyQt6.QtWidgets import (
@@ -553,6 +555,7 @@ class SegmentDownloader(QThread):
         write_subtitles=False,
         subtitle_languages="en.*",
         capture_superchats=False,
+        chapter_keywords=None,
         warn_free_gb=5.0,
         pause_free_gb=1.0,
         parent=None,
@@ -571,6 +574,7 @@ class SegmentDownloader(QThread):
         self.write_subtitles = write_subtitles
         self.subtitle_languages = subtitle_languages
         self.capture_superchats = capture_superchats
+        self.chapter_keywords = list(chapter_keywords or [])
         self.warn_free_gb = warn_free_gb
         self.pause_free_gb = pause_free_gb
         self._stop_requested = False
@@ -581,6 +585,7 @@ class SegmentDownloader(QThread):
         self._chat_path = None
         self._completed_segments = []
         self._chat_first_segment = 1
+        self._video_chapters = []
 
     def request_stop(self):
         self._stop_requested = True
@@ -1045,7 +1050,7 @@ class SegmentDownloader(QThread):
         return None
 
     def _start_chat_capture(self, ytdlp_cmd, safe_title, first_segment):
-        if not self.capture_superchats or self.quality != "Audio Only":
+        if not self.chapter_keywords and (not self.capture_superchats or self.quality != "Audio Only"):
             return
         self._chat_first_segment = first_segment
         self._chat_path = os.path.join(self.output_dir, f"{safe_title}.live_chat.json")
@@ -1088,12 +1093,41 @@ class SegmentDownloader(QThread):
             if candidate.is_file():
                 try:
                     events = parse_superchat_events(candidate)
+                    events.extend(parse_milestone_events(candidate, self.chapter_keywords))
+                    unique = {(event["offset_ms"], event["title"], event.get("message", "")): event for event in events}
+                    events = sorted(unique.values(), key=lambda event: (event["offset_ms"], event["title"]))
                     if events:
                         self.log_message.emit(f"Loaded {len(events)} Super Chat chapter event(s).")
                     return events
                 except (OSError, ValueError) as exc:
                     self.log_message.emit(f"Super Chat parse skipped: {exc}")
         return []
+
+    def _write_chapter_file(self, events):
+        if not events:
+            return
+        if self._chat_path:
+            chapter_path = Path(self._chat_path).with_name(
+                Path(self._chat_path).name.replace(".live_chat.json", ".chapters.ffmeta")
+            )
+        else:
+            raw_prefix = self.filename_prefix or (self.resume_session.stream_title if self.resume_session else "livestream")
+            prefix = safe_filename(raw_prefix)
+            chapter_path = Path(self.output_dir) / f"{prefix}.chapters.ffmeta"
+        chapter_events = [
+            {
+                "start_ms": int(event.get("offset_ms", 0)),
+                "title": event.get("title", "Chapter"),
+                "message": event.get("message", ""),
+            }
+            for event in events
+        ]
+        duration_seconds = max(
+            self.segment_minutes * 60 * max(1, len(self._completed_segments)),
+            max((event["start_ms"] for event in chapter_events), default=0) // 1000 + 1,
+        )
+        chapter_path.write_text(format_ffmetadata_chapters(chapter_events, duration_seconds), encoding="utf-8")
+        self.log_message.emit(f"Chapter marks saved: {chapter_path.name}")
 
     def _embed_superchat_chapters(self, events):
         if not events or self.quality != "Audio Only" or not self._completed_segments:
@@ -1155,7 +1189,7 @@ class SegmentDownloader(QThread):
 
     def _resolve_title(self, ytdlp_cmd):
         safe_title = safe_filename(self.filename_prefix)
-        if self.filename_prefix:
+        if self.filename_prefix and not self.chapter_keywords:
             return safe_title
         try:
             info_cmd = ytdlp_cmd + ["--dump-json", "--no-download", self.url]
@@ -1168,7 +1202,8 @@ class SegmentDownloader(QThread):
             )
             if result.returncode == 0 and result.stdout.strip():
                 info = json.loads(result.stdout.strip().split("\n")[0])
-                return safe_filename(info.get("title", "livestream"))
+                self._video_chapters = video_chapter_events(info)
+                return safe_title if self.filename_prefix else safe_filename(info.get("title", "livestream"))
         except Exception as exc:
             self.log_message.emit(f"Stream title lookup skipped: {exc}")
         return safe_title
@@ -1307,7 +1342,9 @@ class SegmentDownloader(QThread):
         finally:
             try:
                 chat_events = self._stop_chat_capture()
-                self._embed_superchat_chapters(chat_events)
+                all_chapter_events = [*self._video_chapters, *chat_events]
+                self._write_chapter_file(all_chapter_events)
+                self._embed_superchat_chapters(all_chapter_events)
             except Exception as exc:
                 self.log_message.emit(f"Super Chat chapter finalization skipped: {exc}")
             self._current_process = None
@@ -1627,6 +1664,13 @@ class MainWindow(QMainWindow):
         self.subtitle_check = QCheckBox("Automatic subtitles")
         self.subtitle_check.setToolTip("Write yt-dlp automatic subtitle files beside each finalized segment.")
         sg.addWidget(self.subtitle_check, 11, 0, 1, 2)
+        chapter_keywords_label = QLabel("Chat chapter keywords")
+        chapter_keywords_label.setObjectName("fieldLabel")
+        sg.addWidget(chapter_keywords_label, 11, 2, Qt.AlignmentFlag.AlignRight)
+        self.chapter_keywords_input = QLineEdit()
+        self.chapter_keywords_input.setPlaceholderText("milestone, giveaway (optional)")
+        self.chapter_keywords_input.setToolTip("Comma-separated live-chat words that become chapter marks.")
+        sg.addWidget(self.chapter_keywords_input, 11, 3)
 
         sg.setColumnStretch(1, 1)
         layout.addWidget(stream_group)
@@ -1773,6 +1817,7 @@ class MainWindow(QMainWindow):
         self.native_check.toggled.connect(self._refresh_descriptions)
         self.superchat_check.toggled.connect(self._refresh_descriptions)
         self.subtitle_check.toggled.connect(self._refresh_descriptions)
+        self.chapter_keywords_input.textChanged.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1792,6 +1837,8 @@ class MainWindow(QMainWindow):
             self.superchat_check.setChecked(True)
         if c.get('automatic_subtitles'):
             self.subtitle_check.setChecked(True)
+        if c.get('chapter_keywords'):
+            self.chapter_keywords_input.setText(c['chapter_keywords'])
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -1804,6 +1851,7 @@ class MainWindow(QMainWindow):
             'native_fragments': self.native_check.isChecked(),
             'superchat_chapters': self.superchat_check.isChecked(),
             'automatic_subtitles': self.subtitle_check.isChecked(),
+            'chapter_keywords': self.chapter_keywords_input.text().strip(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -1872,12 +1920,14 @@ class MainWindow(QMainWindow):
             superchat_phrase = " Super Chat chapters apply when Quality is Audio Only."
         self.superchat_check.setEnabled(quality == "Audio Only" and not self._session_locked)
         subtitle_phrase = " Automatic subtitles are written beside each segment." if self.subtitle_check.isChecked() else ""
+        keyword_phrase = " Chapter marks are also written for matching live-chat keywords." if self.chapter_keywords_input.text().strip() else ""
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
             f"{retries} retry{'ies' if retries != 1 else 'y'} per segment via {backend_phrase}."
             f"{superchat_phrase}"
             f"{subtitle_phrase}"
+            f"{keyword_phrase}"
         )
         self.capture_summary_label.setText(capture_summary)
         self.hero_summary_label.setText(capture_summary)
@@ -2293,6 +2343,7 @@ class MainWindow(QMainWindow):
             use_native_segmenter=self.native_check.isChecked(),
             capture_superchats=self.superchat_check.isChecked(),
             write_subtitles=self.subtitle_check.isChecked(),
+            chapter_keywords=[keyword.strip() for keyword in self.chapter_keywords_input.text().split(",") if keyword.strip()],
         )
         self.worker.log_message.connect(self._log)
         self.worker.segment_complete.connect(self._on_segment_complete)
@@ -2346,6 +2397,7 @@ class MainWindow(QMainWindow):
         self.native_check.setEnabled(not recording)
         self.superchat_check.setEnabled(not recording and self.quality_combo.currentText() == "Audio Only")
         self.subtitle_check.setEnabled(not recording)
+        self.chapter_keywords_input.setEnabled(not recording)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):

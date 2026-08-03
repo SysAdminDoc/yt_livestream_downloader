@@ -20,10 +20,12 @@ from yt_livestream_core import (
     parse_superchat_events,
     parse_progress_line,
     parse_channel_live_result,
+    parse_milestone_events,
     next_cron_datetime,
     parse_cron_expression,
     quality_fallback_ladder,
     safe_filename,
+    video_chapter_events,
 )
 
 
@@ -197,6 +199,25 @@ def test_live_chat_command_and_superchat_chapter_parser():
     assert segment_events[0]["start_ms"] == 2500
     segment_events = chapter_events_for_segment(events, 1, 20)
     assert segment_events[0]["start_ms"] == 12500
+
+
+def test_milestone_and_video_chapter_events_share_the_same_timeline():
+    records = [
+        {
+            "videoOffsetTimeMsec": 5000,
+            "addChatItemAction": {
+                "item": {
+                    "liveChatTextMessageRenderer": {
+                        "message": {"simpleText": "Milestone reached!"}
+                    }
+                }
+            },
+        }
+    ]
+    assert parse_milestone_events(records, ["milestone"])[0]["title"] == "Milestone — milestone"
+    assert video_chapter_events({"chapters": [{"start_time": 12.5, "title": "Opening"}]}) == [
+        {"offset_ms": 12500, "title": "Opening", "message": ""}
+    ]
 
 
 def test_ffmetadata_chapters_escape_text_and_embed_command(tmp_path):

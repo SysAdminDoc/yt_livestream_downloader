@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-auto-sub", action="store_true", help="Write automatic subtitles beside each segment")
     parser.add_argument("--subtitle-languages", default="en.*", help="yt-dlp subtitle language selector")
     parser.add_argument("--superchat-chapters", action="store_true", help="Embed live-chat Super Chats as Audio Only chapters")
+    parser.add_argument("--chapter-keyword", action="append", dest="chapter_keywords", default=[], help="Create a chapter mark when live chat contains this keyword; repeatable")
     parser.add_argument("--warn-free-gb", type=float, default=5.0, metavar="GB", help="Log a disk warning below this free space")
     parser.add_argument("--pause-free-gb", type=float, default=1.0, metavar="GB", help="Stop before recording below this free space")
     parser.add_argument("--start-at", metavar="DATETIME", help="Start at local ISO time, for example 2026-08-03T20:00:00")
@@ -105,6 +106,7 @@ def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace
         "write_auto_sub",
         "subtitle_languages",
         "superchat_chapters",
+        "chapter_keywords",
         "warn_free_gb",
         "pause_free_gb",
         "start_at",
@@ -319,6 +321,7 @@ def run(args: argparse.Namespace) -> int:
             write_subtitles=args.write_auto_sub,
             subtitle_languages=args.subtitle_languages,
             capture_superchats=args.superchat_chapters,
+            chapter_keywords=args.chapter_keywords,
             warn_free_gb=args.warn_free_gb,
             pause_free_gb=args.pause_free_gb,
         )
