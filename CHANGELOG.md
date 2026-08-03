@@ -17,6 +17,7 @@ All notable changes to yt_livestream_downloader will be documented in this file.
 - Added: GUI automatic-subtitle toggle with finalized sidecar renaming for overlap captures.
 - Added: keyword-based live-chat chapter marks and preservation of yt-dlp-returned video chapters in `.ffmeta` files.
 - Added: nonblocking GUI and headless post-process pipeline for concat, H.265, and two-pass loudnorm output.
+- Added: periodic disk guardrails with configurable GUI thresholds and safe partial-segment pause/resume behavior.
 - Fixed: frozen builds no longer recurse into themselves while bootstrapping optional dependencies.
 
 ## [v1.0.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)

@@ -97,7 +97,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QTextEdit, QFileDialog,
     QGroupBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem,
-    QSplitter, QFrame, QCheckBox, QDateTimeEdit, QSizePolicy,
+    QSplitter, QFrame, QCheckBox, QDateTimeEdit, QDoubleSpinBox, QSizePolicy,
     QGraphicsOpacityEffect
 )
 from PyQt6.QtCore import (
@@ -622,6 +622,9 @@ class SegmentDownloader(QThread):
         self._completed_segments = []
         self._chat_first_segment = 1
         self._video_chapters = []
+        self.paused = False
+        self._last_disk_check = 0.0
+        self._disk_warning_logged = False
 
     def request_stop(self):
         self._stop_requested = True
@@ -631,6 +634,32 @@ class SegmentDownloader(QThread):
                     slot.process.terminate()
             except Exception:
                 pass
+
+    def _check_disk_guardrail(self):
+        now = time.monotonic()
+        if now - self._last_disk_check < 5:
+            return True
+        self._last_disk_check = now
+        try:
+            disk = check_disk_space(self.output_dir, self.warn_free_gb, self.pause_free_gb)
+        except OSError as exc:
+            self.paused = True
+            self._stop_requested = True
+            self.log_message.emit(f"Disk check failed; pausing safely: {exc}")
+            self.status_update.emit("Paused for disk safety; resume after storage is available.")
+            return False
+        if disk.level == "pause":
+            self.paused = True
+            self._stop_requested = True
+            self.log_message.emit("Disk space reached the pause threshold; preserving a partial segment for resume.")
+            self.status_update.emit("Paused for disk safety; free space and resume the session when ready.")
+            return False
+        if disk.level == "warn" and not self._disk_warning_logged:
+            self._disk_warning_logged = True
+            self.log_message.emit("Warning: available disk space is below the configured warning threshold.")
+        elif disk.level == "ok":
+            self._disk_warning_logged = False
+        return True
 
     def _get_ytdlp_cmd(self):
         path = shutil.which('yt-dlp')
@@ -1064,6 +1093,8 @@ class SegmentDownloader(QThread):
                     )
                     boundary_stop = False
                     while slot.process.poll() is None and not self._stop_requested:
+                        if not self._check_disk_guardrail():
+                            break
                         self._drain_output(slot)
                         if slot.native_mode and time.monotonic() - slot.started_at >= slot.duration_seconds:
                             boundary_stop = True
@@ -1260,7 +1291,8 @@ class SegmentDownloader(QThread):
             self.status_update.emit("Checking available disk space...")
             disk = check_disk_space(self.output_dir, self.warn_free_gb, self.pause_free_gb)
             if disk.level == "pause":
-                self.error.emit("Recording paused: available disk space is below the safety threshold.")
+                self.paused = True
+                self.status_update.emit("Paused for disk safety; free space and resume the session when ready.")
                 return
             if disk.level == "warn":
                 self.log_message.emit("Warning: available disk space is below the configured warning threshold.")
@@ -1294,6 +1326,8 @@ class SegmentDownloader(QThread):
             next_start = current.started_at + segment_secs - overlap
 
             while current and not self._stop_requested:
+                if not self._check_disk_guardrail():
+                    break
                 self._drain_output(current)
                 now = time.monotonic()
                 if pipeline_enabled and next_slot is None and now >= next_start:
@@ -1368,7 +1402,7 @@ class SegmentDownloader(QThread):
                 next_start = current.started_at + segment_secs - overlap
 
             if self._stop_requested:
-                self.log_message.emit("\nStopped by user.")
+                self.log_message.emit("\nPaused for disk safety." if self.paused else "\nStopped by user.")
                 for slot in list(self._active_slots):
                     self._terminate_slot(slot)
                     self._drain_output(slot)
@@ -1444,6 +1478,7 @@ class MainWindow(QMainWindow):
         self._session_locked = False
         self._session_error = False
         self._user_stopped = False
+        self._session_paused = False
         self._previewed_url = None
         self._ffmpeg_ok = False
         self._ytdlp_ok = False
@@ -1717,6 +1752,30 @@ class MainWindow(QMainWindow):
         self.loudnorm_check = QCheckBox("Two-pass loudnorm")
         self.loudnorm_check.setToolTip("Normalize final audio to -16 LUFS with ffmpeg's measured two-pass filter.")
         sg.addWidget(self.loudnorm_check, 13, 0, 1, 2)
+        warn_disk_label = QLabel("Warn below")
+        warn_disk_label.setObjectName("fieldLabel")
+        sg.addWidget(warn_disk_label, 14, 0)
+        self.warn_disk_spin = QDoubleSpinBox()
+        self.warn_disk_spin.setRange(0, 10000)
+        self.warn_disk_spin.setDecimals(1)
+        self.warn_disk_spin.setSingleStep(0.5)
+        self.warn_disk_spin.setValue(5.0)
+        self.warn_disk_spin.setSuffix(" GB")
+        self.warn_disk_spin.setFixedWidth(120)
+        self.warn_disk_spin.setToolTip("Log a warning when free disk space falls below this amount.")
+        sg.addWidget(self.warn_disk_spin, 14, 1)
+        pause_disk_label = QLabel("Auto-pause below")
+        pause_disk_label.setObjectName("fieldLabel")
+        sg.addWidget(pause_disk_label, 14, 2, Qt.AlignmentFlag.AlignRight)
+        self.pause_disk_spin = QDoubleSpinBox()
+        self.pause_disk_spin.setRange(0, 10000)
+        self.pause_disk_spin.setDecimals(1)
+        self.pause_disk_spin.setSingleStep(0.5)
+        self.pause_disk_spin.setValue(1.0)
+        self.pause_disk_spin.setSuffix(" GB")
+        self.pause_disk_spin.setFixedWidth(120)
+        self.pause_disk_spin.setToolTip("Finalize a partial segment and pause when free space falls below this amount.")
+        sg.addWidget(self.pause_disk_spin, 14, 3)
 
         sg.setColumnStretch(1, 1)
         layout.addWidget(stream_group)
@@ -1867,6 +1926,8 @@ class MainWindow(QMainWindow):
         self.concat_check.toggled.connect(self._refresh_descriptions)
         self.h265_check.toggled.connect(self._refresh_descriptions)
         self.loudnorm_check.toggled.connect(self._refresh_descriptions)
+        self.warn_disk_spin.valueChanged.connect(self._refresh_descriptions)
+        self.pause_disk_spin.valueChanged.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -1894,6 +1955,10 @@ class MainWindow(QMainWindow):
             self.h265_check.setChecked(True)
         if c.get('loudnorm'):
             self.loudnorm_check.setChecked(True)
+        if 'warn_free_gb' in c:
+            self.warn_disk_spin.setValue(float(c['warn_free_gb']))
+        if 'pause_free_gb' in c:
+            self.pause_disk_spin.setValue(float(c['pause_free_gb']))
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -1910,6 +1975,8 @@ class MainWindow(QMainWindow):
             'auto_concat': self.concat_check.isChecked(),
             'h265_output': self.h265_check.isChecked(),
             'loudnorm': self.loudnorm_check.isChecked(),
+            'warn_free_gb': self.warn_disk_spin.value(),
+            'pause_free_gb': self.pause_disk_spin.value(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -1980,6 +2047,7 @@ class MainWindow(QMainWindow):
         subtitle_phrase = " Automatic subtitles are written beside each segment." if self.subtitle_check.isChecked() else ""
         keyword_phrase = " Chapter marks are also written for matching live-chat keywords." if self.chapter_keywords_input.text().strip() else ""
         self.h265_check.setEnabled(quality != "Audio Only" and not self._session_locked)
+        self.pause_disk_spin.setMaximum(self.warn_disk_spin.value())
         pipeline_options = []
         if self.concat_check.isChecked():
             pipeline_options.append("concat")
@@ -1988,6 +2056,10 @@ class MainWindow(QMainWindow):
         if self.loudnorm_check.isChecked():
             pipeline_options.append("loudnorm")
         pipeline_phrase = f" Post-process: {', '.join(pipeline_options)}." if pipeline_options else ""
+        disk_phrase = (
+            f" Disk guardrails: warn below {self.warn_disk_spin.value():g} GB, auto-pause below "
+            f"{self.pause_disk_spin.value():g} GB."
+        )
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
@@ -1996,6 +2068,7 @@ class MainWindow(QMainWindow):
             f"{subtitle_phrase}"
             f"{keyword_phrase}"
             f"{pipeline_phrase}"
+            f"{disk_phrase}"
         )
         self.capture_summary_label.setText(capture_summary)
         self.hero_summary_label.setText(capture_summary)
@@ -2044,7 +2117,7 @@ class MainWindow(QMainWindow):
         self.fetch_info_btn.setEnabled(
             url_present and self._ytdlp_ok and not preview_busy and not self._session_locked
         )
-        postprocess_busy = self.postprocess_worker is not None and self.postprocess_worker.isRunning()
+        postprocess_busy = self.postprocess_worker is not None
         self.start_btn.setEnabled(
             url_present and self._ytdlp_ok and self._ffmpeg_ok and not self._session_locked and not postprocess_busy
         )
@@ -2372,6 +2445,7 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
         self._session_error = False
+        self._session_paused = False
         self._user_stopped = False
         self._total_bytes = 0
         self._segment_count = 0
@@ -2413,6 +2487,8 @@ class MainWindow(QMainWindow):
             capture_superchats=self.superchat_check.isChecked(),
             write_subtitles=self.subtitle_check.isChecked(),
             chapter_keywords=[keyword.strip() for keyword in self.chapter_keywords_input.text().split(",") if keyword.strip()],
+            warn_free_gb=self.warn_disk_spin.value(),
+            pause_free_gb=self.pause_disk_spin.value(),
         )
         self.worker.log_message.connect(self._log)
         self.worker.segment_complete.connect(self._on_segment_complete)
@@ -2470,6 +2546,8 @@ class MainWindow(QMainWindow):
         self.concat_check.setEnabled(not recording)
         self.h265_check.setEnabled(not recording and self.quality_combo.currentText() != "Audio Only")
         self.loudnorm_check.setEnabled(not recording)
+        self.warn_disk_spin.setEnabled(not recording)
+        self.pause_disk_spin.setEnabled(not recording)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):
@@ -2512,10 +2590,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Error - review the activity log")
 
     def _on_finished(self):
+        if self.worker is not None:
+            self._session_paused = bool(getattr(self.worker, "paused", False))
         self._set_recording_state(False)
         self._elapsed_timer.stop()
         self.worker = None
-        if not self._session_error and not self._user_stopped and self._postprocess_requested():
+        if not self._session_error and not self._user_stopped and not self._session_paused and self._postprocess_requested():
             self._start_postprocess()
             return
         self._complete_session()
@@ -2572,7 +2652,16 @@ class MainWindow(QMainWindow):
 
     def _complete_session(self):
         total_summary = f"{self._segment_count} segment{'s' if self._segment_count != 1 else ''}, {human_bytes(self._total_bytes)} total"
-        if self._session_error:
+        if self._session_paused:
+            self._set_banner_state(
+                "Paused",
+                "Recording paused for disk safety",
+                "Free disk space was below the safety threshold. Free space, then enable Resume previous session to continue.",
+                "warning",
+            )
+            self._set_state_value("Paused", "warning")
+            self.statusBar().showMessage("Paused for disk safety")
+        elif self._session_error:
             self._set_banner_state(
                 "Error",
                 "Session stopped because of an error",
@@ -2608,6 +2697,10 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.worker.request_stop()
             self.worker.wait(5000)
+        if self.postprocess_worker and self.postprocess_worker.isRunning() and not self.postprocess_worker.wait(5000):
+            self._log("Post-processing is still running; close was deferred until ffmpeg exits.")
+            event.ignore()
+            return
         event.accept()
 
 

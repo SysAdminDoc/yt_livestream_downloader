@@ -261,7 +261,7 @@ def _postprocess_segments(args: argparse.Namespace, paths: list[str]) -> int:
     if not paths or not (args.concat or args.h265 or args.loudnorm):
         return 0
     try:
-        output_path = run_postprocess(
+        run_postprocess(
             paths,
             args.output,
             args.quality,
@@ -325,7 +325,7 @@ def run(args: argparse.Namespace) -> int:
     from yt_livestream_downloader import SegmentDownloader
 
     app = QCoreApplication(sys.argv)
-    holder = {"worker": None, "exit_code": 0, "timer": None, "segments": 0, "stopping": False, "saved_paths": []}
+    holder = {"worker": None, "exit_code": 0, "timer": None, "segments": 0, "stopping": False, "paused": False, "saved_paths": []}
 
     def stop_handler(_signum, _frame):
         worker = holder["worker"]
@@ -375,12 +375,13 @@ def run(args: argparse.Namespace) -> int:
             _send_webhooks(args.webhook_urls, "error", "Recording session failed.", {"url": args.url, "error": message})
 
         def on_finished():
-            if not holder["stopping"] and not holder["exit_code"]:
+            holder["paused"] = bool(getattr(holder["worker"], "paused", False))
+            if not holder["stopping"] and not holder["paused"] and not holder["exit_code"]:
                 postprocess_result = _postprocess_segments(args, holder["saved_paths"])
                 if postprocess_result:
                     holder["exit_code"] = postprocess_result
-            event = "session_stopped" if holder["stopping"] else ("error" if holder["exit_code"] else "stream_end")
-            message = "Recording session stopped." if holder["stopping"] else "Recording session ended."
+            event = "session_paused" if holder["paused"] else ("session_stopped" if holder["stopping"] else ("error" if holder["exit_code"] else "stream_end"))
+            message = "Recording session paused for disk safety." if holder["paused"] else ("Recording session stopped." if holder["stopping"] else "Recording session ended.")
             _send_webhooks(args.webhook_urls, event, message, {"url": args.url, "segments": holder["segments"]})
             app.quit()
 

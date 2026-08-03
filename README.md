@@ -28,6 +28,7 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 | **Segmented Recording** | Records livestreams in configurable time chunks (1-360 min, default 30 min) with a pre-armed overlap to reduce boundary gaps |
 | **Quality Selection** | Best, 1080p, 720p, 480p, or Audio Only |
 | **Auto-Retry** | Configurable retry attempts per segment, with automatic reconnection and quality fallback on network or format failures |
+| **Disk Guardrails** | Periodic free-space checks warn at the configured threshold and finalize/pause safely at the lower threshold for crash-resume continuation |
 | **Scheduled Start** | Set a future date/time to automatically begin recording |
 | **Stream Info Preview** | Fetch and display stream title + live status before recording |
 | **Live Stats Dashboard** | Real-time segment count, total size, elapsed time, and status cards |
