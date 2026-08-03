@@ -20,6 +20,7 @@ All notable changes to yt_livestream_downloader will be documented in this file.
 - Added: periodic disk guardrails with configurable GUI thresholds and safe partial-segment pause/resume behavior.
 - Added: optional input-free embedded mpv mini-player with graceful missing-dependency fallback.
 - Added: persisted Mocha, Midnight, and Lavender theme variants with an application font-size override.
+- Added: reproducible unsigned PyInstaller build with multiprocessing freeze support, runtime hook guard, and macOS/Linux packaging entry points.
 - Fixed: frozen builds no longer recurse into themselves while bootstrapping optional dependencies.
 
 ## [v1.0.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)

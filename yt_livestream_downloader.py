@@ -9,6 +9,7 @@ Uses yt-dlp + ffmpeg under the hood.
 # ruff: noqa: E402
 import importlib.util
 import html
+import multiprocessing
 import os
 import queue
 import re
@@ -2905,6 +2906,8 @@ class MainWindow(QMainWindow):
 # Entry Point
 # ──────────────────────────────────────────────
 def main():
+    multiprocessing.freeze_support()
+
     def exception_handler(exc_type, exc_value, exc_tb):
         msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
         crash_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crash.log')

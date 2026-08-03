@@ -21,6 +21,8 @@ PyQt6 and yt-dlp are auto-installed on first run. The only external dependency y
 
 For the packaged Windows executable, install the **yt-dlp command-line tool** on `PATH` before launching; frozen builds do not run pip or ensurepip.
 
+Build an unsigned Windows one-file artifact with `python build_release.py`. The script cleans only this repository's `build/` and `dist/` directories, includes the runtime hook and icon, and writes `dist/YTLivestreamDownloader.exe`.
+
 ## Features
 
 | Feature | Description |
@@ -90,6 +92,10 @@ curl -fsSL https://deno.land/install.sh | sh
 ```
 
 Without a JS runtime, yt-dlp may display a warning and some formats could be unavailable.
+
+### Cross-platform packaging
+
+On macOS, run `python build_macos.py` on a macOS host with py2app installed. On Linux, run `python build_linux.py` on a Linux host with `appimagetool` on `PATH`; both scripts produce unsigned artifacts and keep the same Python entrypoint.
 
 ## Usage
 
