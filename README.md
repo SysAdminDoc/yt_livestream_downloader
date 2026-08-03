@@ -47,6 +47,8 @@ Build an unsigned Windows one-file artifact with `python build_release.py`. The 
 | **Automatic Subtitles** | Optional yt-dlp automatic subtitle capture is kept as a companion sidecar beside each finalized segment |
 | **Chapter Marks** | Matching live-chat keywords and yt-dlp-returned video chapters are preserved as an `.ffmeta` chapter-mark file; Audio Only can embed them |
 | **Post-process Pipeline** | Optional normal-end concat, H.265 transcode, and two-pass -16 LUFS loudnorm run off the GUI or CLI without changing the original segments |
+| **Thumbnail Extraction** | Extracts numbered JPG thumbnails from each completed segment at a configurable interval after a normal stream end |
+| **Silence Skip** | Audio Only post-processing trims dead-air runs down to the configured maximum duration without changing the original segments |
 | **Embedded Mini-player** | Optional mpv surface inside the GUI for live preview; missing mpv disables only the preview |
 | **Theme + Font Controls** | Persisted Mocha, Midnight, or Lavender palette with a 10-22 px application font override |
 | **Live-chat Sidecar** | Optional GUI or CLI capture keeps raw YouTube live-chat JSON for later analysis or chapter generation |
@@ -144,6 +146,8 @@ Add `--webhook-url https://...` to receive notifications. Repeat the option for 
 
 Use `--concat` to join completed segments at normal stream end, `--h265` to produce a libx265 video output, and `--loudnorm` to run measured two-pass normalization. The GUI exposes the same choices. Original segment files and their manifest remain unchanged.
 
+Use `--thumbnail-seconds 30` to write numbered JPG frames under `thumbnails/` for each completed segment. Use `--silence-skip 3 --quality "Audio Only"` to trim any silence beyond three seconds from the concatenated output; the original `.m4a` segments remain unchanged. The GUI exposes both controls in Stream Settings.
+
 Use `--capture-live-chat` to retain the raw live-chat sidecar without chapter filtering. `--rclone-remote drive:YT-Livestreams` uploads completed segments after a successful normal end when rclone is installed and configured.
 
 Enable **Embedded mpv mini-player** in the GUI to preview the stream inside the app. It is optional and does not affect capture when mpv is unavailable.
@@ -167,6 +171,8 @@ Stream_Title_seg003_20260209_000333.mp4
 ```
 
 The output folder also contains a crash-resume state file and an atomic `.yt_livestream_manifest.json` checksum manifest. The manifest is updated after each finalized segment, including user-stopped partial captures. When Super Chat chapters are enabled, the raw live-chat capture remains beside the audio segments as `<stream>.live_chat.json`.
+
+When thumbnail extraction is enabled, numbered JPG files are written under `thumbnails/` using each segment's filename stem. Silence trimming produces a separate `<prefix>_concat.m4a` output and never rewrites the source segments.
 
 ## How It Works
 
@@ -203,7 +209,7 @@ Settings are persisted to:
 | Windows | `%APPDATA%\YTLivestreamDL\config.json` |
 | macOS/Linux | `~/YTLivestreamDL/config.json` |
 
-Saved fields: output directory, segment length, quality preset, retry count, native fragment preference, Super Chat chapter preference, automatic subtitle preference, last URL.
+Saved fields: output directory, segment length, quality preset, retry count, native fragment preference, Super Chat chapter preference, automatic subtitle preference, thumbnail interval, silence-skip threshold, last URL.
 
 ## Troubleshooting
 

@@ -597,7 +597,7 @@ class PostProcessWorker(QThread):
     error = pyqtSignal(str)
     finished_output = pyqtSignal(str)
 
-    def __init__(self, paths, output_dir, quality, prefix, concat, h265, loudnorm, parent=None):
+    def __init__(self, paths, output_dir, quality, prefix, concat, h265, loudnorm, silence_skip, thumbnail_seconds, parent=None):
         super().__init__(parent)
         self.paths = list(paths)
         self.output_dir = output_dir
@@ -606,6 +606,8 @@ class PostProcessWorker(QThread):
         self.concat = concat
         self.h265 = h265
         self.loudnorm = loudnorm
+        self.silence_skip = silence_skip
+        self.thumbnail_seconds = thumbnail_seconds
 
     def run(self):
         try:
@@ -617,6 +619,8 @@ class PostProcessWorker(QThread):
                 concat=self.concat,
                 h265=self.h265,
                 loudnorm=self.loudnorm,
+                silence_skip_seconds=self.silence_skip,
+                thumbnail_seconds=self.thumbnail_seconds,
                 log=self.log_message.emit,
             )
             self.finished_output.emit(str(output_path) if output_path else "")
@@ -1911,6 +1915,26 @@ class MainWindow(QMainWindow):
         self.capture_live_chat_check = QCheckBox("Keep live-chat JSON sidecar")
         self.capture_live_chat_check.setToolTip("Retain YouTube live-chat JSON even when no chapter filter is selected.")
         sg.addWidget(self.capture_live_chat_check, 17, 0, 1, 4)
+        thumbnail_label = QLabel("Thumbnails every")
+        thumbnail_label.setObjectName("fieldLabel")
+        sg.addWidget(thumbnail_label, 18, 0)
+        self.thumbnail_spin = QSpinBox()
+        self.thumbnail_spin.setRange(0, 3600)
+        self.thumbnail_spin.setSuffix(" s")
+        self.thumbnail_spin.setFixedWidth(120)
+        self.thumbnail_spin.setToolTip("Extract numbered JPG thumbnails after a normal stream end; 0 disables.")
+        sg.addWidget(self.thumbnail_spin, 18, 1)
+        silence_label = QLabel("Silence skip")
+        silence_label.setObjectName("fieldLabel")
+        sg.addWidget(silence_label, 18, 2, Qt.AlignmentFlag.AlignRight)
+        self.silence_skip_spin = QDoubleSpinBox()
+        self.silence_skip_spin.setRange(0, 60)
+        self.silence_skip_spin.setDecimals(1)
+        self.silence_skip_spin.setSingleStep(0.5)
+        self.silence_skip_spin.setSuffix(" s")
+        self.silence_skip_spin.setFixedWidth(120)
+        self.silence_skip_spin.setToolTip("Remove Audio Only silence runs longer than this amount; 0 disables.")
+        sg.addWidget(self.silence_skip_spin, 18, 3)
         warn_disk_label = QLabel("Warn below")
         warn_disk_label.setObjectName("fieldLabel")
         sg.addWidget(warn_disk_label, 14, 0)
@@ -2092,6 +2116,8 @@ class MainWindow(QMainWindow):
         self.theme_combo.currentTextChanged.connect(self._apply_visual_settings)
         self.font_size_spin.valueChanged.connect(self._apply_visual_settings)
         self.capture_live_chat_check.toggled.connect(self._refresh_descriptions)
+        self.thumbnail_spin.valueChanged.connect(self._refresh_descriptions)
+        self.silence_skip_spin.valueChanged.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -2131,6 +2157,10 @@ class MainWindow(QMainWindow):
             self.font_size_spin.setValue(int(c['font_size']))
         if c.get('capture_live_chat'):
             self.capture_live_chat_check.setChecked(True)
+        if 'thumbnail_seconds' in c:
+            self.thumbnail_spin.setValue(int(c['thumbnail_seconds']))
+        if 'silence_skip_seconds' in c:
+            self.silence_skip_spin.setValue(float(c['silence_skip_seconds']))
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -2153,6 +2183,8 @@ class MainWindow(QMainWindow):
             'theme': self.theme_combo.currentText(),
             'font_size': self.font_size_spin.value(),
             'capture_live_chat': self.capture_live_chat_check.isChecked(),
+            'thumbnail_seconds': self.thumbnail_spin.value(),
+            'silence_skip_seconds': self.silence_skip_spin.value(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -2234,6 +2266,11 @@ class MainWindow(QMainWindow):
             pipeline_options.append("H.265")
         if self.loudnorm_check.isChecked():
             pipeline_options.append("loudnorm")
+        if self.thumbnail_spin.value() > 0:
+            pipeline_options.append(f"thumbnails/{self.thumbnail_spin.value()}s")
+        self.silence_skip_spin.setEnabled(quality == "Audio Only" and not self._session_locked)
+        if self.silence_skip_spin.value() > 0 and quality == "Audio Only":
+            pipeline_options.append(f"silence skip/{self.silence_skip_spin.value():g}s")
         pipeline_phrase = f" Post-process: {', '.join(pipeline_options)}." if pipeline_options else ""
         disk_phrase = (
             f" Disk guardrails: warn below {self.warn_disk_spin.value():g} GB, auto-pause below "
@@ -2756,6 +2793,10 @@ class MainWindow(QMainWindow):
         self.theme_combo.setEnabled(not recording)
         self.font_size_spin.setEnabled(not recording)
         self.capture_live_chat_check.setEnabled(not recording)
+        self.thumbnail_spin.setEnabled(not recording)
+        self.silence_skip_spin.setEnabled(
+            not recording and self.quality_combo.currentText() == "Audio Only"
+        )
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):
@@ -2818,6 +2859,8 @@ class MainWindow(QMainWindow):
                 self.concat_check.isChecked()
                 or self.loudnorm_check.isChecked()
                 or (self.h265_check.isChecked() and quality != "Audio Only")
+                or self.thumbnail_spin.value() > 0
+                or (self.silence_skip_spin.value() > 0 and quality == "Audio Only")
             )
         )
 
@@ -2832,6 +2875,8 @@ class MainWindow(QMainWindow):
             self.concat_check.isChecked(),
             self.h265_check.isChecked() and quality != "Audio Only",
             self.loudnorm_check.isChecked(),
+            self.silence_skip_spin.value() if quality == "Audio Only" else 0,
+            self.thumbnail_spin.value(),
             self,
         )
         self.postprocess_worker.log_message.connect(lambda message: self._log(f"Post-process: {message}"))

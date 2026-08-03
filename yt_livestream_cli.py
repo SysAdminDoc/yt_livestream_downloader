@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concat", action="store_true", help="Concatenate completed segments when the stream ends")
     parser.add_argument("--h265", action="store_true", help="Transcode the concatenated video to H.265")
     parser.add_argument("--loudnorm", action="store_true", help="Run two-pass EBU loudness normalization on the final output")
+    parser.add_argument("--silence-skip", type=float, default=0.0, metavar="SECONDS", help="Remove Audio Only silence runs longer than this threshold")
+    parser.add_argument("--thumbnail-seconds", type=int, default=0, metavar="N", help="Extract a thumbnail every N seconds (0 disables)")
     parser.add_argument("--rclone-remote", help="Upload completed segment files to an rclone remote, for example drive:YT-Livestreams")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
@@ -122,6 +124,8 @@ def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace
         "concat",
         "h265",
         "loudnorm",
+        "silence_skip",
+        "thumbnail_seconds",
         "rclone_remote",
     ):
         if key in item:
@@ -263,7 +267,7 @@ def _send_webhooks(urls: list[str], event: str, message: str, fields: dict[str, 
 
 
 def _postprocess_segments(args: argparse.Namespace, paths: list[str]) -> int:
-    if not paths or not (args.concat or args.h265 or args.loudnorm):
+    if not paths or not (args.concat or args.h265 or args.loudnorm or args.silence_skip > 0 or args.thumbnail_seconds > 0):
         return 0
     try:
         run_postprocess(
@@ -274,6 +278,8 @@ def _postprocess_segments(args: argparse.Namespace, paths: list[str]) -> int:
             concat=args.concat,
             h265=args.h265,
             loudnorm=args.loudnorm,
+            silence_skip_seconds=args.silence_skip,
+            thumbnail_seconds=args.thumbnail_seconds,
             log=lambda message: print(f"[postprocess] {message}", flush=True),
         )
         return 0
@@ -339,6 +345,12 @@ def run(args: argparse.Namespace) -> int:
         return 2
     if args.h265 and args.quality == "Audio Only":
         print("error: --h265 requires a video quality", file=sys.stderr)
+        return 2
+    if args.silence_skip < 0 or args.thumbnail_seconds < 0:
+        print("error: --silence-skip and --thumbnail-seconds cannot be negative", file=sys.stderr)
+        return 2
+    if args.silence_skip and args.quality != "Audio Only":
+        print("error: --silence-skip requires --quality 'Audio Only'", file=sys.stderr)
         return 2
 
     try:

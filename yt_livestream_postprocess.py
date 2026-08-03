@@ -13,6 +13,7 @@ from yt_livestream_core import (
     build_concat_command,
     build_loudnorm_analysis_command,
     build_postprocess_command,
+    build_thumbnail_command,
     format_concat_file_list,
     parse_loudnorm_measurements,
     safe_filename,
@@ -32,11 +33,13 @@ def run_postprocess(
     concat: bool = False,
     h265: bool = False,
     loudnorm: bool = False,
+    silence_skip_seconds: float = 0.0,
+    thumbnail_seconds: int = 0,
     log: Callable[[str], None] | None = None,
 ) -> Path | None:
     """Concat and optionally transcode finalized segments, returning the output path."""
 
-    if not (concat or h265 or loudnorm):
+    if not (concat or h265 or loudnorm or silence_skip_seconds > 0 or thumbnail_seconds > 0):
         return None
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
@@ -49,7 +52,8 @@ def run_postprocess(
     title = safe_filename(prefix or segment_paths[0].stem.split("_seg", 1)[0] or "livestream")
     extension = ".m4a" if quality == "Audio Only" else ".mp4"
     final_path = output_root / f"{title}_concat{extension}"
-    requires_processing = h265 or loudnorm
+    requires_processing = h265 or loudnorm or silence_skip_seconds > 0
+    needs_combined = concat or requires_processing
     source_path = output_root / f".{title}_concat.source{extension}" if requires_processing else final_path
     list_path: Path | None = None
 
@@ -74,17 +78,18 @@ def run_postprocess(
         emit(f"{label} complete")
 
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            suffix=".concat.txt",
-            prefix=".yt_livestream_",
-            dir=output_root,
-            delete=False,
-        ) as handle:
-            list_path = Path(handle.name)
-            handle.write(format_concat_file_list(segment_paths))
-        run_ffmpeg(build_concat_command(ffmpeg_path, list_path, source_path), "segment concat")
+        if needs_combined:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                suffix=".concat.txt",
+                prefix=".yt_livestream_",
+                dir=output_root,
+                delete=False,
+            ) as handle:
+                list_path = Path(handle.name)
+                handle.write(format_concat_file_list(segment_paths))
+            run_ffmpeg(build_concat_command(ffmpeg_path, list_path, source_path), "segment concat")
 
         measurements = None
         if loudnorm:
@@ -111,11 +116,23 @@ def run_postprocess(
                     final_path,
                     h265=h265,
                     loudnorm_measurements=measurements,
+                    silence_skip_seconds=silence_skip_seconds,
                 ),
                 "final transcode",
             )
-        emit(f"output: {final_path}")
-        return final_path
+        if thumbnail_seconds > 0:
+            thumbnail_dir = output_root / "thumbnails"
+            thumbnail_dir.mkdir(parents=True, exist_ok=True)
+            for segment_path in segment_paths:
+                pattern = thumbnail_dir / f"{segment_path.stem}_%05d.jpg"
+                run_ffmpeg(
+                    build_thumbnail_command(ffmpeg_path, segment_path, thumbnail_seconds, pattern),
+                    f"thumbnails for {segment_path.name}",
+                )
+        if needs_combined:
+            emit(f"output: {final_path}")
+            return final_path
+        return None
     finally:
         if list_path:
             try:

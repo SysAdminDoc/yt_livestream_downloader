@@ -16,6 +16,11 @@ def test_cli_parser_exposes_capture_controls():
             "--live-from-start",
             "--write-auto-sub",
             "--superchat-chapters",
+            "--capture-live-chat",
+            "--silence-skip",
+            "3",
+            "--thumbnail-seconds",
+            "30",
             "--start-at",
             "2026-08-03T20:00:00",
         ]
@@ -23,6 +28,9 @@ def test_cli_parser_exposes_capture_controls():
     assert args.quality == "Audio Only"
     assert args.resume is True
     assert args.superchat_chapters is True
+    assert args.capture_live_chat is True
+    assert args.silence_skip == 3
+    assert args.thumbnail_seconds == 30
     assert args.start_at == "2026-08-03T20:00:00"
 
 

@@ -207,6 +207,7 @@ def build_postprocess_command(
     *,
     h265: bool = False,
     loudnorm_measurements: Mapping[str, str] | None = None,
+    silence_skip_seconds: float = 0.0,
 ) -> list[str]:
     """Build the final transcode command after concat and optional loudnorm analysis."""
 
@@ -221,6 +222,11 @@ def build_postprocess_command(
         "-map",
         "0",
     ]
+    filters = []
+    if silence_skip_seconds > 0:
+        filters.append(
+            f"silenceremove=stop_periods=-1:stop_duration={float(silence_skip_seconds):g}:stop_threshold=-45dB"
+        )
     if loudnorm_measurements:
         filter_value = (
             "loudnorm=I=-16:TP=-1.5:LRA=11:"
@@ -230,12 +236,36 @@ def build_postprocess_command(
             f"measured_thresh={loudnorm_measurements['input_thresh']}:"
             f"offset={loudnorm_measurements['target_offset']}:linear=true:print_format=summary"
         )
-        command.extend(["-af", filter_value])
+        filters.append(filter_value)
+    if filters:
+        command.extend(["-af", ",".join(filters)])
     command.extend(["-c:v", "libx265" if h265 else "copy"])
     if h265:
         command.extend(["-crf", "23", "-preset", "medium"])
     command.extend(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", os.fspath(output_path)])
     return command
+
+
+def build_thumbnail_command(
+    ffmpeg_path: str,
+    input_path: str | os.PathLike[str],
+    interval_seconds: int,
+    output_pattern: str | os.PathLike[str],
+) -> list[str]:
+    return [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        os.fspath(input_path),
+        "-vf",
+        f"fps=1/{max(1, int(interval_seconds))}",
+        "-q:v",
+        "2",
+        os.fspath(output_pattern),
+    ]
 
 
 def build_mpv_command(mpv_path: str, url: str, window_id: int) -> list[str]:

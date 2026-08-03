@@ -14,6 +14,7 @@ from yt_livestream_core import (
     build_mpv_command,
     build_postprocess_command,
     build_rclone_copy_command,
+    build_thumbnail_command,
     build_embed_chapters_command,
     build_live_chat_command,
     build_notification_payload,
@@ -121,6 +122,8 @@ def test_postprocess_commands_cover_concat_h265_and_two_pass_loudnorm():
     final = build_postprocess_command("ffmpeg", "joined.mp4", "final.mp4", h265=True, loudnorm_measurements=measurements)
     assert "libx265" in final
     assert any(argument.startswith("loudnorm=I=-16") for argument in final)
+    silence = build_postprocess_command("ffmpeg", "joined.m4a", "final.m4a", silence_skip_seconds=3)
+    assert any(argument.startswith("silenceremove=") for argument in silence)
 
 
 def test_mpv_command_is_embedded_and_disables_default_input_bindings():
@@ -133,6 +136,12 @@ def test_mpv_command_is_embedded_and_disables_default_input_bindings():
 def test_rclone_upload_command_targets_one_remote_file():
     command = build_rclone_copy_command("rclone", "captures/segment001.mp4", "drive:livestreams")
     assert command == ["rclone", "copyto", "captures/segment001.mp4", "drive:livestreams/segment001.mp4", "--no-traverse"]
+
+
+def test_thumbnail_command_uses_interval_and_numbered_output_pattern():
+    command = build_thumbnail_command("ffmpeg", "segment.mp4", 30, "thumb_%05d.jpg")
+    assert command[command.index("-vf") + 1] == "fps=1/30"
+    assert command[-1] == "thumb_%05d.jpg"
 
 
 def test_recording_session_round_trips_atomically(tmp_path):
