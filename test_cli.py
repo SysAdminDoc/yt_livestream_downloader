@@ -51,3 +51,9 @@ def test_watch_parser_accepts_polling_controls():
     args = build_parser().parse_args(["--watch-channel", "https://www.youtube.com/@creator", "--poll-seconds", "30"])
     assert args.watch_channel.endswith("@creator")
     assert args.poll_seconds == 30
+
+
+def test_cron_parser_accepts_finite_schedule():
+    args = build_parser().parse_args(["https://youtu.be/example", "--cron", "0 20 * * 2", "--cron-count", "2"])
+    assert args.cron == "0 20 * * 2"
+    assert args.cron_count == 2

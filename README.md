@@ -121,6 +121,8 @@ Run it with `python yt_livestream_cli.py --queue-file queue.json`. The queue adv
 
 To wait for a channel to go live, use `python yt_livestream_cli.py --watch-channel https://www.youtube.com/@creator --poll-seconds 60`. Add `--watch-timeout 3600` for a bounded wait; omit it to keep watching until interrupted.
 
+For recurring captures, pass a standard five-field local cron expression, such as `python yt_livestream_cli.py URL --cron "0 20 * * 2" --cron-count 4`. Leave `--cron-count` at its default `0` to continue indefinitely; each occurrence runs through the normal retry, resume, manifest, and disk-safety paths.
+
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 
 ### Scheduled Recording

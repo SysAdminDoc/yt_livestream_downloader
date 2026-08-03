@@ -20,6 +20,7 @@ from yt_livestream_core import (
     build_channel_watch_command,
     load_queue_items,
     load_session,
+    next_cron_datetime,
     parse_channel_live_result,
 )
 
@@ -38,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch-channel", help="Poll a public channel URL until a live video appears")
     parser.add_argument("--poll-seconds", type=int, default=60, metavar="N", help="Channel poll interval")
     parser.add_argument("--watch-timeout", type=int, default=0, metavar="N", help="Stop watching after N seconds (0 means forever)")
+    parser.add_argument("--cron", metavar="EXPR", help="Recurring five-field local cron schedule")
+    parser.add_argument("--cron-count", type=int, default=0, metavar="N", help="Number of cron occurrences (0 means forever)")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
     parser.add_argument("--quality", choices=QUALITY_CHOICES, default="Best")
@@ -174,7 +177,57 @@ def _run_watch(args: argparse.Namespace) -> int:
     return 1
 
 
+def _wait_until(target: datetime) -> bool:
+    print(f"Next scheduled start: {target.isoformat(sep=' ', timespec='seconds')}", flush=True)
+    try:
+        while True:
+            remaining = (target - datetime.now()).total_seconds()
+            if remaining <= 0:
+                return True
+            time.sleep(min(1, remaining))
+    except KeyboardInterrupt:
+        print("Schedule interrupted.", file=sys.stderr, flush=True)
+        return False
+
+
+def _run_cron(args: argparse.Namespace) -> int:
+    if not args.url:
+        print("error: --cron requires a URL", file=sys.stderr)
+        return 2
+    if args.queue_file or args.watch_channel or args.start_at:
+        print("error: --cron cannot be combined with --queue-file, --watch-channel, or --start-at", file=sys.stderr)
+        return 2
+    if args.cron_count < 0:
+        print("error: --cron-count cannot be negative", file=sys.stderr)
+        return 2
+    try:
+        next_run = next_cron_datetime(args.cron)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    occurrence = 0
+    while args.cron_count == 0 or occurrence < args.cron_count:
+        if not _wait_until(next_run):
+            return 130
+        values = vars(args).copy()
+        values["cron"] = None
+        values["cron_count"] = 0
+        result = run(argparse.Namespace(**values))
+        if result:
+            return result
+        occurrence += 1
+        try:
+            next_run = next_cron_datetime(args.cron, next_run)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    print(f"Cron schedule complete: {occurrence} occurrence(s).", flush=True)
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
+    if args.cron:
+        return _run_cron(args)
     if args.watch_channel:
         if args.url or args.queue_file:
             print("error: --watch-channel cannot be combined with a URL or --queue-file", file=sys.stderr)

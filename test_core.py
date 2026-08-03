@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from yt_livestream_core import (
     MANIFEST_FILENAME,
@@ -18,6 +19,8 @@ from yt_livestream_core import (
     parse_superchat_events,
     parse_progress_line,
     parse_channel_live_result,
+    next_cron_datetime,
+    parse_cron_expression,
     quality_fallback_ladder,
     safe_filename,
 )
@@ -70,6 +73,18 @@ def test_channel_watch_command_and_live_result_parser():
         "https://www.youtube.com/watch?v=abc"
     )
     assert parse_channel_live_result({"entries": [{"id": "abc", "live_status": "was_live"}]}) is None
+
+
+def test_cron_parser_finds_next_weekday_occurrence_and_rejects_bad_syntax():
+    now = datetime(2026, 8, 3, 19, 59, 30)
+    assert next_cron_datetime("*/15 20 * * 1-5", now) == datetime(2026, 8, 3, 20, 0)
+    assert len(parse_cron_expression("0 8 * * 1-5")) == 5
+    try:
+        parse_cron_expression("0 8 * *")
+    except ValueError as exc:
+        assert "five fields" in str(exc)
+    else:
+        raise AssertionError("invalid cron expression was accepted")
 
 
 def test_recording_session_round_trips_atomically(tmp_path):

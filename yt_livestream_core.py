@@ -14,7 +14,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -209,6 +209,85 @@ def parse_channel_live_result(source: Any) -> str | None:
         if isinstance(video_id, str) and video_id:
             return f"https://www.youtube.com/watch?v={video_id}"
     return None
+
+
+def _cron_field(spec: str, minimum: int, maximum: int, name: str) -> tuple[set[int], bool]:
+    values: set[int] = set()
+    wildcard = spec == "*"
+    for part in spec.split(","):
+        if not part:
+            raise ValueError(f"cron {name} field is empty")
+        pieces = part.split("/")
+        if len(pieces) > 2:
+            raise ValueError(f"cron {name} field has too many step separators")
+        base = pieces[0]
+        try:
+            step = int(pieces[1]) if len(pieces) == 2 else 1
+        except ValueError as exc:
+            raise ValueError(f"cron {name} step is not an integer") from exc
+        if step <= 0:
+            raise ValueError(f"cron {name} step must be positive")
+        if base == "*":
+            start, end = minimum, maximum
+        elif "-" in base:
+            bounds = base.split("-")
+            if len(bounds) != 2:
+                raise ValueError(f"cron {name} range is invalid")
+            try:
+                start, end = int(bounds[0]), int(bounds[1])
+            except ValueError as exc:
+                raise ValueError(f"cron {name} range is not numeric") from exc
+        else:
+            try:
+                start = end = int(base)
+            except ValueError as exc:
+                raise ValueError(f"cron {name} value is not numeric") from exc
+        if start < minimum or end > maximum or start > end:
+            raise ValueError(f"cron {name} must be between {minimum} and {maximum}")
+        values.update(range(start, end + 1, step))
+    if not values:
+        raise ValueError(f"cron {name} field has no values")
+    return values, wildcard
+
+
+def parse_cron_expression(expression: str) -> tuple[tuple[set[int], bool], ...]:
+    """Parse standard five-field minute/hour/day/month/weekday cron syntax."""
+
+    fields = str(expression).split()
+    if len(fields) != 5:
+        raise ValueError("cron expression must contain five fields: minute hour day-of-month month weekday")
+    minute = _cron_field(fields[0], 0, 59, "minute")
+    hour = _cron_field(fields[1], 0, 23, "hour")
+    day = _cron_field(fields[2], 1, 31, "day-of-month")
+    month = _cron_field(fields[3], 1, 12, "month")
+    weekday_values, weekday_wildcard = _cron_field(fields[4], 0, 7, "weekday")
+    weekday_values = {0 if value == 7 else value for value in weekday_values}
+    return minute, hour, day, month, (weekday_values, weekday_wildcard)
+
+
+def next_cron_datetime(expression: str, now: datetime | None = None) -> datetime:
+    """Return the next local naive datetime matching a five-field cron expression."""
+
+    minute, hour, day, month, weekday = parse_cron_expression(expression)
+    now = now or datetime.now()
+    candidate = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    search_limit = 366 * 24 * 60 + 1
+    day_values, day_wildcard = day
+    weekday_values, weekday_wildcard = weekday
+    for _ in range(search_limit):
+        if candidate.month not in month[0] or candidate.hour not in hour[0] or candidate.minute not in minute[0]:
+            candidate += timedelta(minutes=1)
+            continue
+        day_match = candidate.day in day_values
+        weekday_match = ((candidate.weekday() + 1) % 7) in weekday_values
+        if not day_wildcard and not weekday_wildcard:
+            calendar_match = day_match or weekday_match
+        else:
+            calendar_match = day_match and weekday_match
+        if calendar_match:
+            return candidate
+        candidate += timedelta(minutes=1)
+    raise ValueError("cron expression has no occurrence within the next year")
 
 
 def _text_value(value: Any) -> str:
