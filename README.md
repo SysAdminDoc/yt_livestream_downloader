@@ -49,6 +49,7 @@ Build an unsigned Windows one-file artifact with `python build_release.py`. The 
 | **Post-process Pipeline** | Optional normal-end concat, H.265 transcode, and two-pass -16 LUFS loudnorm run off the GUI or CLI without changing the original segments |
 | **Embedded Mini-player** | Optional mpv surface inside the GUI for live preview; missing mpv disables only the preview |
 | **Theme + Font Controls** | Persisted Mocha, Midnight, or Lavender palette with a 10-22 px application font override |
+| **Live-chat Sidecar** | Optional GUI or CLI capture keeps raw YouTube live-chat JSON for later analysis or chapter generation |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -142,6 +143,8 @@ For recurring captures, pass a standard five-field local cron expression, such a
 Add `--webhook-url https://...` to receive notifications. Repeat the option for multiple endpoints; delivery failures are logged as warnings and never interrupt recording. Use `--chapter-keyword milestone` (repeatable) for the same keyword chapter marks in headless mode.
 
 Use `--concat` to join completed segments at normal stream end, `--h265` to produce a libx265 video output, and `--loudnorm` to run measured two-pass normalization. The GUI exposes the same choices. Original segment files and their manifest remain unchanged.
+
+Use `--capture-live-chat` to retain the raw live-chat sidecar without chapter filtering. `--rclone-remote drive:YT-Livestreams` uploads completed segments after a successful normal end when rclone is installed and configured.
 
 Enable **Embedded mpv mini-player** in the GUI to preview the stream inside the app. It is optional and does not affect capture when mpv is unavailable.
 

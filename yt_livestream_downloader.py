@@ -712,6 +712,7 @@ class SegmentDownloader(QThread):
         write_subtitles=False,
         subtitle_languages="en.*",
         capture_superchats=False,
+        capture_live_chat=False,
         chapter_keywords=None,
         warn_free_gb=5.0,
         pause_free_gb=1.0,
@@ -731,6 +732,7 @@ class SegmentDownloader(QThread):
         self.write_subtitles = write_subtitles
         self.subtitle_languages = subtitle_languages
         self.capture_superchats = capture_superchats
+        self.capture_live_chat = capture_live_chat
         self.chapter_keywords = list(chapter_keywords or [])
         self.warn_free_gb = warn_free_gb
         self.pause_free_gb = pause_free_gb
@@ -1238,7 +1240,7 @@ class SegmentDownloader(QThread):
         return None
 
     def _start_chat_capture(self, ytdlp_cmd, safe_title, first_segment):
-        if not self.chapter_keywords and (not self.capture_superchats or self.quality != "Audio Only"):
+        if not self.chapter_keywords and not self.capture_live_chat and (not self.capture_superchats or self.quality != "Audio Only"):
             return
         self._chat_first_segment = first_segment
         self._chat_path = os.path.join(self.output_dir, f"{safe_title}.live_chat.json")
@@ -1252,7 +1254,7 @@ class SegmentDownloader(QThread):
                 stderr=subprocess.DEVNULL,
                 creationflags=creationflags,
             )
-            self.log_message.emit("Super Chat capture armed for audio-only chapters.")
+            self.log_message.emit("Live-chat sidecar capture armed.")
         except OSError as exc:
             self._chat_process = None
             self.log_message.emit(f"Super Chat capture unavailable: {exc}")
@@ -1906,6 +1908,9 @@ class MainWindow(QMainWindow):
         self.font_size_spin.setSuffix(" px")
         self.font_size_spin.setFixedWidth(120)
         sg.addWidget(self.font_size_spin, 16, 3)
+        self.capture_live_chat_check = QCheckBox("Keep live-chat JSON sidecar")
+        self.capture_live_chat_check.setToolTip("Retain YouTube live-chat JSON even when no chapter filter is selected.")
+        sg.addWidget(self.capture_live_chat_check, 17, 0, 1, 4)
         warn_disk_label = QLabel("Warn below")
         warn_disk_label.setObjectName("fieldLabel")
         sg.addWidget(warn_disk_label, 14, 0)
@@ -2086,6 +2091,7 @@ class MainWindow(QMainWindow):
         self.mini_player_check.toggled.connect(self._refresh_descriptions)
         self.theme_combo.currentTextChanged.connect(self._apply_visual_settings)
         self.font_size_spin.valueChanged.connect(self._apply_visual_settings)
+        self.capture_live_chat_check.toggled.connect(self._refresh_descriptions)
 
     def _restore_settings(self):
         c = self._config
@@ -2123,6 +2129,8 @@ class MainWindow(QMainWindow):
             self.theme_combo.setCurrentText(c['theme'])
         if 'font_size' in c:
             self.font_size_spin.setValue(int(c['font_size']))
+        if c.get('capture_live_chat'):
+            self.capture_live_chat_check.setChecked(True)
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -2144,6 +2152,7 @@ class MainWindow(QMainWindow):
             'mini_player': self.mini_player_check.isChecked(),
             'theme': self.theme_combo.currentText(),
             'font_size': self.font_size_spin.value(),
+            'capture_live_chat': self.capture_live_chat_check.isChecked(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -2230,6 +2239,7 @@ class MainWindow(QMainWindow):
             f" Disk guardrails: warn below {self.warn_disk_spin.value():g} GB, auto-pause below "
             f"{self.pause_disk_spin.value():g} GB."
         )
+        chat_phrase = " Live-chat JSON is retained." if self.capture_live_chat_check.isChecked() else ""
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
@@ -2239,6 +2249,7 @@ class MainWindow(QMainWindow):
             f"{keyword_phrase}"
             f"{pipeline_phrase}"
             f"{disk_phrase}"
+            f"{chat_phrase}"
         )
         self.capture_summary_label.setText(capture_summary)
         self.hero_summary_label.setText(capture_summary)
@@ -2677,6 +2688,7 @@ class MainWindow(QMainWindow):
             resume_session=self._resume_session if self.resume_check.isChecked() else None,
             use_native_segmenter=self.native_check.isChecked(),
             capture_superchats=self.superchat_check.isChecked(),
+            capture_live_chat=self.capture_live_chat_check.isChecked(),
             write_subtitles=self.subtitle_check.isChecked(),
             chapter_keywords=[keyword.strip() for keyword in self.chapter_keywords_input.text().split(",") if keyword.strip()],
             warn_free_gb=self.warn_disk_spin.value(),
@@ -2743,6 +2755,7 @@ class MainWindow(QMainWindow):
         self.pause_disk_spin.setEnabled(not recording)
         self.theme_combo.setEnabled(not recording)
         self.font_size_spin.setEnabled(not recording)
+        self.capture_live_chat_check.setEnabled(not recording)
         self._refresh_action_availability()
 
     def _on_segment_complete(self, filepath, size_bytes):

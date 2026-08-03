@@ -13,6 +13,7 @@ from yt_livestream_core import (
     build_loudnorm_analysis_command,
     build_mpv_command,
     build_postprocess_command,
+    build_rclone_copy_command,
     build_embed_chapters_command,
     build_live_chat_command,
     build_notification_payload,
@@ -127,6 +128,11 @@ def test_mpv_command_is_embedded_and_disables_default_input_bindings():
     assert "--wid=12345" in command
     assert "--no-input-default-bindings" in command
     assert command[-2:] == ["--", "https://youtu.be/example"]
+
+
+def test_rclone_upload_command_targets_one_remote_file():
+    command = build_rclone_copy_command("rclone", "captures/segment001.mp4", "drive:livestreams")
+    assert command == ["rclone", "copyto", "captures/segment001.mp4", "drive:livestreams/segment001.mp4", "--no-traverse"]
 
 
 def test_recording_session_round_trips_atomically(tmp_path):

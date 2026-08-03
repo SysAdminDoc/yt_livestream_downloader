@@ -254,6 +254,17 @@ def build_mpv_command(mpv_path: str, url: str, window_id: int) -> list[str]:
     ]
 
 
+def build_rclone_copy_command(
+    rclone_path: str,
+    filepath: str | os.PathLike[str],
+    remote: str,
+) -> list[str]:
+    """Build a single-file rclone upload that does not traverse the remote."""
+
+    target = f"{remote.rstrip('/')}/{Path(filepath).name}"
+    return [rclone_path, "copyto", os.fspath(filepath), target, "--no-traverse"]
+
+
 def build_live_chat_command(
     ytdlp_cmd: Sequence[str],
     url: str,

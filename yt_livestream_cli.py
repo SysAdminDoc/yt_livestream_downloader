@@ -21,6 +21,7 @@ from yt_livestream_core import (
     APP_VERSION,
     build_channel_watch_command,
     build_notification_payload,
+    build_rclone_copy_command,
     load_queue_items,
     load_session,
     next_cron_datetime,
@@ -49,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concat", action="store_true", help="Concatenate completed segments when the stream ends")
     parser.add_argument("--h265", action="store_true", help="Transcode the concatenated video to H.265")
     parser.add_argument("--loudnorm", action="store_true", help="Run two-pass EBU loudness normalization on the final output")
+    parser.add_argument("--rclone-remote", help="Upload completed segment files to an rclone remote, for example drive:YT-Livestreams")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
     parser.add_argument("--quality", choices=QUALITY_CHOICES, default="Best")
@@ -60,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-auto-sub", action="store_true", help="Write automatic subtitles beside each segment")
     parser.add_argument("--subtitle-languages", default="en.*", help="yt-dlp subtitle language selector")
     parser.add_argument("--superchat-chapters", action="store_true", help="Embed live-chat Super Chats as Audio Only chapters")
+    parser.add_argument("--capture-live-chat", action="store_true", help="Keep the raw live-chat JSON sidecar")
     parser.add_argument("--chapter-keyword", action="append", dest="chapter_keywords", default=[], help="Create a chapter mark when live chat contains this keyword; repeatable")
     parser.add_argument("--warn-free-gb", type=float, default=5.0, metavar="GB", help="Log a disk warning below this free space")
     parser.add_argument("--pause-free-gb", type=float, default=1.0, metavar="GB", help="Stop before recording below this free space")
@@ -110,6 +113,7 @@ def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace
         "write_auto_sub",
         "subtitle_languages",
         "superchat_chapters",
+        "capture_live_chat",
         "chapter_keywords",
         "warn_free_gb",
         "pause_free_gb",
@@ -118,6 +122,7 @@ def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace
         "concat",
         "h265",
         "loudnorm",
+        "rclone_remote",
     ):
         if key in item:
             values[key] = item[key]
@@ -277,6 +282,33 @@ def _postprocess_segments(args: argparse.Namespace, paths: list[str]) -> int:
         return 1
 
 
+def _upload_with_rclone(args: argparse.Namespace, paths: list[str]) -> int:
+    if not args.rclone_remote:
+        return 0
+    rclone_path = shutil.which("rclone")
+    if not rclone_path:
+        print("[upload] rclone is not available on PATH", file=sys.stderr, flush=True)
+        return 1
+    for path in paths:
+        try:
+            result = subprocess.run(
+                build_rclone_copy_command(rclone_path, path, args.rclone_remote),
+                capture_output=True,
+                text=True,
+                timeout=3600,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"[upload] failed: {exc}", file=sys.stderr, flush=True)
+            return 1
+        if result.returncode != 0:
+            detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else f"exit code {result.returncode}"
+            print(f"[upload] failed for {os.path.basename(path)}: {detail}", file=sys.stderr, flush=True)
+            return 1
+        print(f"[upload] uploaded {os.path.basename(path)}", flush=True)
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     if args.cron:
         return _run_cron(args)
@@ -351,6 +383,7 @@ def run(args: argparse.Namespace) -> int:
             write_subtitles=args.write_auto_sub,
             subtitle_languages=args.subtitle_languages,
             capture_superchats=args.superchat_chapters,
+            capture_live_chat=args.capture_live_chat,
             chapter_keywords=args.chapter_keywords,
             warn_free_gb=args.warn_free_gb,
             pause_free_gb=args.pause_free_gb,
@@ -380,6 +413,10 @@ def run(args: argparse.Namespace) -> int:
                 postprocess_result = _postprocess_segments(args, holder["saved_paths"])
                 if postprocess_result:
                     holder["exit_code"] = postprocess_result
+            if not holder["stopping"] and not holder["paused"] and not holder["exit_code"]:
+                upload_result = _upload_with_rclone(args, holder["saved_paths"])
+                if upload_result:
+                    holder["exit_code"] = upload_result
             event = "session_paused" if holder["paused"] else ("session_stopped" if holder["stopping"] else ("error" if holder["exit_code"] else "stream_end"))
             message = "Recording session paused for disk safety." if holder["paused"] else ("Recording session stopped." if holder["stopping"] else "Recording session ended.")
             _send_webhooks(args.webhook_urls, event, message, {"url": args.url, "segments": holder["segments"]})
