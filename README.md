@@ -105,6 +105,19 @@ python yt_livestream_cli.py "https://www.youtube.com/watch?v=..." \
 
 Use `python yt_livestream_cli.py --help` for the complete option list. `--start-at` accepts a local ISO timestamp, and `Ctrl+C` requests a clean partial-segment finalization.
 
+For sequential multi-stream capture, pass a JSON queue. Items may override the shared CLI defaults with `output`, `start_at`, `quality`, `segment_minutes`, `retries`, and capture flags:
+
+```json
+{
+  "items": [
+    {"url": "https://www.youtube.com/watch?v=first", "start_at": "2026-08-03T20:00:00"},
+    {"url": "https://www.youtube.com/watch?v=second", "quality": "Audio Only", "superchat_chapters": true}
+  ]
+}
+```
+
+Run it with `python yt_livestream_cli.py --queue-file queue.json`. The queue advances only after the current stream exits successfully; a failed item stops the queue and returns its non-zero exit code.
+
 If a session is interrupted, reopen the same URL and output folder and leave **Resume previous session** enabled to continue at the next segment recorded in the session state.
 
 ### Scheduled Recording

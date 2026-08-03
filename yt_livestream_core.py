@@ -24,6 +24,8 @@ MANIFEST_SCHEMA_VERSION = 1
 SESSION_STATE_FILENAME = ".yt_livestream_session.json"
 MANIFEST_FILENAME = ".yt_livestream_manifest.json"
 OVERLAP_SECONDS = 2
+APP_NAME = "YT Livestream Downloader"
+APP_VERSION = "1.0.0"
 
 
 FORMAT_SELECTORS: dict[str, str | None] = {
@@ -383,6 +385,34 @@ def read_json(path: str | os.PathLike[str]) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
     except (OSError, ValueError, TypeError):
         return None
+
+
+def load_queue_items(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    """Load a validated JSON queue containing one URL per item.
+
+    The file may be either a JSON array or an object with an ``items`` array.
+    Each item can override CLI defaults with ``output``, ``start_at``,
+    ``quality``, ``segment_minutes``, ``retries``, and the capture booleans.
+    """
+
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    items = payload.get("items") if isinstance(payload, Mapping) else payload
+    if not isinstance(items, list) or not items:
+        raise ValueError("queue file must contain a non-empty JSON array or an object with an items array")
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"queue item {index} must be a JSON object")
+        url = str(item.get("url", "")).strip()
+        if not url:
+            raise ValueError(f"queue item {index} is missing url")
+        value = dict(item)
+        value["url"] = url
+        if "output_dir" in value and "output" not in value:
+            value["output"] = value["output_dir"]
+        normalized.append(value)
+    return normalized
 
 
 @dataclass

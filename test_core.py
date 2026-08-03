@@ -13,6 +13,7 @@ from yt_livestream_core import (
     chapter_events_for_segment,
     format_ffmetadata_chapters,
     load_session,
+    load_queue_items,
     parse_superchat_events,
     parse_progress_line,
     quality_fallback_ladder,
@@ -104,6 +105,17 @@ def test_atomic_json_write_creates_parent_and_valid_json(tmp_path):
     target = tmp_path / "nested" / "state.json"
     atomic_write_json(target, {"ok": True})
     assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_queue_loader_accepts_array_and_normalizes_output_alias(tmp_path):
+    queue_path = tmp_path / "queue.json"
+    queue_path.write_text(
+        json.dumps({"items": [{"url": " https://youtu.be/one ", "output_dir": "captures"}]}),
+        encoding="utf-8",
+    )
+    assert load_queue_items(queue_path) == [
+        {"url": "https://youtu.be/one", "output_dir": "captures", "output": "captures"}
+    ]
 
 
 def test_live_chat_command_and_superchat_chapter_parser():

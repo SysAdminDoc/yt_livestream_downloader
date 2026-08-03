@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from yt_livestream_cli import _parse_start_at, build_parser
+from yt_livestream_cli import _parse_start_at, _queue_namespace, build_parser
 
 
 def test_cli_parser_exposes_capture_controls():
@@ -34,3 +34,14 @@ def test_cli_start_at_accepts_iso_and_zulu_values():
 def test_cli_start_at_rejects_invalid_values():
     with pytest.raises(ValueError, match="invalid --start-at"):
         _parse_start_at("tomorrow")
+
+
+def test_queue_item_overrides_are_applied_to_a_base_namespace():
+    base = build_parser().parse_args(["--queue-file", "queue.json"])
+    queued = _queue_namespace(
+        base,
+        {"url": "https://youtu.be/queued", "quality": "Audio Only", "start_at": "2026-08-03T20:00:00"},
+    )
+    assert queued.url == "https://youtu.be/queued"
+    assert queued.quality == "Audio Only"
+    assert queued.start_at == "2026-08-03T20:00:00"

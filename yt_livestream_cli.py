@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing
 import os
 import signal
@@ -11,10 +12,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QCoreApplication, QTimer
-
-from yt_livestream_core import load_session
-from yt_livestream_downloader import APP_NAME, VERSION, SegmentDownloader
+from yt_livestream_core import APP_NAME, APP_VERSION, load_queue_items, load_session
 
 
 DEFAULT_OUTPUT = Path.home() / "Downloads" / "YT_Livestreams"
@@ -26,7 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="yt-livestream-downloader",
         description="Record a YouTube livestream as resilient, timestamped segments without opening the GUI.",
     )
-    parser.add_argument("url", help="YouTube livestream URL")
+    parser.add_argument("url", nargs="?", help="YouTube livestream URL")
+    parser.add_argument("--queue-file", type=Path, help="JSON queue with one URL and optional per-stream overrides per item")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
     parser.add_argument("--quality", choices=QUALITY_CHOICES, default="Best")
@@ -41,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warn-free-gb", type=float, default=5.0, metavar="GB", help="Log a disk warning below this free space")
     parser.add_argument("--pause-free-gb", type=float, default=1.0, metavar="GB", help="Stop before recording below this free space")
     parser.add_argument("--start-at", metavar="DATETIME", help="Start at local ISO time, for example 2026-08-03T20:00:00")
-    parser.add_argument("--version", action="version", version=f"{APP_NAME} {VERSION}")
+    parser.add_argument("--version", action="version", version=f"{APP_NAME} {APP_VERSION}")
     return parser
 
 
@@ -72,7 +71,57 @@ def _matching_resume_session(output_dir: Path, url: str):
     return session
 
 
+def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace:
+    values = vars(base).copy()
+    values["queue_file"] = None
+    for key in (
+        "output",
+        "segment_minutes",
+        "quality",
+        "retries",
+        "prefix",
+        "resume",
+        "native_fragments",
+        "live_from_start",
+        "write_auto_sub",
+        "subtitle_languages",
+        "superchat_chapters",
+        "warn_free_gb",
+        "pause_free_gb",
+        "start_at",
+    ):
+        if key in item:
+            values[key] = item[key]
+    values["url"] = item["url"]
+    return argparse.Namespace(**values)
+
+
+def _run_queue(args: argparse.Namespace) -> int:
+    try:
+        items = load_queue_items(args.queue_file)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(f"error: cannot load queue file: {exc}", file=sys.stderr)
+        return 2
+    for index, item in enumerate(items, start=1):
+        queued_args = _queue_namespace(args, item)
+        print(f"Queue item {index}/{len(items)}: {queued_args.url}", flush=True)
+        result = run(queued_args)
+        if result:
+            print(f"Queue stopped at item {index} with exit code {result}.", file=sys.stderr)
+            return result
+    print(f"Queue complete: {len(items)} stream(s).", flush=True)
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
+    if args.queue_file:
+        if args.url:
+            print("error: provide either a URL or --queue-file, not both", file=sys.stderr)
+            return 2
+        return _run_queue(args)
+    if not args.url:
+        print("error: a URL is required unless --queue-file is provided", file=sys.stderr)
+        return 2
     if not 1 <= args.segment_minutes <= 360:
         print("error: --segment-minutes must be between 1 and 360", file=sys.stderr)
         return 2
@@ -96,6 +145,10 @@ def run(args: argparse.Namespace) -> int:
     if not shutil.which("ffmpeg"):
         print("error: ffmpeg is required and must be available on PATH", file=sys.stderr)
         return 2
+
+    from PyQt6.QtCore import QCoreApplication, QTimer
+
+    from yt_livestream_downloader import SegmentDownloader
 
     app = QCoreApplication(sys.argv)
     holder = {"worker": None, "exit_code": 0, "timer": None}

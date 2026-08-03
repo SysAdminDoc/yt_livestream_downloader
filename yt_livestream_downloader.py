@@ -71,6 +71,7 @@ from dataclasses import dataclass
 
 from yt_livestream_core import (
     OVERLAP_SECONDS,
+    APP_VERSION,
     ManifestStore,
     RecordingSession,
     build_embed_chapters_command,
@@ -102,7 +103,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QColor, QIcon, QPalette, QDesktopServices, QPixmap
 from PyQt6.QtCore import QUrl
 
-VERSION = "1.0.0"
+VERSION = APP_VERSION
 APP_NAME = "YT Livestream Downloader"
 
 THEME = {
