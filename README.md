@@ -23,6 +23,14 @@ For the packaged Windows executable, install the **yt-dlp command-line tool** on
 
 Build an unsigned Windows one-file artifact with `python build_release.py`. The script cleans only this repository's `build/` and `dist/` directories, includes the runtime hook and icon, and writes `dist/YTLivestreamDownloader.exe`.
 
+Generate release-ready WinGet and Scoop manifests after building the Windows artifact:
+
+```powershell
+python generate_manifests.py --version 1.0.0 `
+  --installer-url https://github.com/SysAdminDoc/yt_livestream_downloader/releases/download/v1.0.0/YTLivestreamDownloader.exe `
+  --sha256 <64-character-artifact-sha256>
+```
+
 ## Features
 
 | Feature | Description |
@@ -52,6 +60,7 @@ Build an unsigned Windows one-file artifact with `python build_release.py`. The 
 | **Embedded Mini-player** | Optional mpv surface inside the GUI for live preview; missing mpv disables only the preview |
 | **Theme + Font Controls** | Persisted Mocha, Midnight, or Lavender palette with a 10-22 px application font override |
 | **Live-chat Sidecar** | Optional GUI or CLI capture keeps raw YouTube live-chat JSON for later analysis or chapter generation |
+| **Release Manifests** | Generates validated WinGet multi-file YAML and Scoop JSON with the exact Windows artifact URL and SHA-256 |
 | **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
@@ -98,7 +107,7 @@ Without a JS runtime, yt-dlp may display a warning and some formats could be una
 
 ### Cross-platform packaging
 
-On macOS, run `python build_macos.py` on a macOS host with py2app installed. On Linux, run `python build_linux.py` on a Linux host with `appimagetool` on `PATH`; both scripts produce unsigned artifacts and keep the same Python entrypoint.
+On macOS, run `python build_macos.py` on a macOS host with py2app installed. On Linux, run `python build_linux.py` on a Linux host with PyInstaller and `appimagetool` on `PATH` (or pass `--appimagetool <path>`). Both scripts produce unsigned artifacts and keep the same Python entrypoint. Use `--dry-run` to inspect either configuration without building.
 
 ## Usage
 

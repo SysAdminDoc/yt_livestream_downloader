@@ -1,0 +1,34 @@
+{
+  "version": "1.0.0",
+  "description": "Record livestreams as resilient timestamped segments.",
+  "homepage": "https://github.com/SysAdminDoc/yt_livestream_downloader",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/SysAdminDoc/yt_livestream_downloader/releases/download/v1.0.0/YTLivestreamDownloader.exe",
+      "hash": "c6965326ced98804ab6d1dd71f3c220436f4b962b3c8c3b5ed4194a3e9d36934",
+      "bin": [
+        [
+          "YTLivestreamDownloader.exe",
+          "yt-livestream-downloader"
+        ]
+      ],
+      "shortcuts": [
+        [
+          "YTLivestreamDownloader.exe",
+          "YT Livestream Downloader"
+        ]
+      ]
+    }
+  },
+  "checkver": {
+    "github": "https://github.com/SysAdminDoc/yt_livestream_downloader"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/SysAdminDoc/yt_livestream_downloader/releases/download/v$version/YTLivestreamDownloader.exe"
+      }
+    }
+  }
+}

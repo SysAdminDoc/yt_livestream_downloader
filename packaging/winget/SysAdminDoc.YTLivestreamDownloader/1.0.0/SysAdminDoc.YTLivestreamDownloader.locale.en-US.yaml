@@ -1,0 +1,19 @@
+PackageIdentifier: SysAdminDoc.YTLivestreamDownloader
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: SysAdminDoc
+PublisherUrl: https://github.com/SysAdminDoc
+PackageName: YT Livestream Downloader
+PackageUrl: https://github.com/SysAdminDoc/yt_livestream_downloader
+License: MIT
+LicenseUrl: https://github.com/SysAdminDoc/yt_livestream_downloader/blob/main/LICENSE
+ShortDescription: Record livestreams as resilient timestamped segments.
+Description: A PyQt6 desktop and headless CLI recorder powered by yt-dlp and ffmpeg.
+Moniker: yt-livestream-downloader
+Tags:
+- livestream
+- recorder
+- youtube
+- yt-dlp
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0
