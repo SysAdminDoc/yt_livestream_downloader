@@ -1,6 +1,6 @@
 # YT Livestream Downloader
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.1.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -26,8 +26,8 @@ Build an unsigned Windows one-file artifact with `python build_release.py`. The 
 Generate release-ready WinGet and Scoop manifests after building the Windows artifact:
 
 ```powershell
-python generate_manifests.py --version 1.0.0 `
-  --installer-url https://github.com/SysAdminDoc/yt_livestream_downloader/releases/download/v1.0.0/YTLivestreamDownloader.exe `
+python generate_manifests.py --version 1.1.0 `
+  --installer-url https://github.com/SysAdminDoc/yt_livestream_downloader/releases/download/v1.1.0/YTLivestreamDownloader.exe `
   --sha256 <64-character-artifact-sha256>
 ```
 

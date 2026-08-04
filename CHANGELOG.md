@@ -2,7 +2,7 @@
 
 All notable changes to yt_livestream_downloader will be documented in this file.
 
-## [Unreleased]
+## [v1.1.0] - 2026-08-03
 
 - Added: overlap-aware segment capture with a two-writer pre-arm and clean boundary trim.
 - Added: crash-resumable recording state and an atomic per-segment SHA-256 manifest.
@@ -27,7 +27,7 @@ All notable changes to yt_livestream_downloader will be documented in this file.
 - Added: optional Streamlink capture backend with Auto routing for non-YouTube URLs, bounded ffmpeg muxing, GUI backend selection, and CLI guardrails for yt-dlp-only features.
 - Fixed: frozen builds no longer recurse into themselves while bootstrapping optional dependencies.
 
-## [v1.0.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
+## [v1.0.0] - Initial release
 
 - Added: Add files via upload
 - Added: Add files via upload

@@ -26,7 +26,7 @@ SESSION_STATE_FILENAME = ".yt_livestream_session.json"
 MANIFEST_FILENAME = ".yt_livestream_manifest.json"
 OVERLAP_SECONDS = 2
 APP_NAME = "YT Livestream Downloader"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 BACKEND_CHOICES = ("auto", "yt-dlp", "streamlink")
 
 

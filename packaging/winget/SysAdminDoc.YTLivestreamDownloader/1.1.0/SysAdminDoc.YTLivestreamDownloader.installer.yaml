@@ -1,0 +1,10 @@
+PackageIdentifier: SysAdminDoc.YTLivestreamDownloader
+PackageVersion: 1.1.0
+Installers:
+- Architecture: x64
+  InstallerType: portable
+  InstallerUrl: https://github.com/SysAdminDoc/yt_livestream_downloader/releases/download/v1.1.0/YTLivestreamDownloader.exe
+  InstallerSha256: 3781f49bd89e14f97d5bdf408a9e619f4bb9db27af761e6bbe579d9123eb132c
+  PortableCommandAlias: yt-livestream-downloader
+ManifestType: installer
+ManifestVersion: 1.12.0

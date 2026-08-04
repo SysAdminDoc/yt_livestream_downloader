@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YouTube Livestream Downloader v1.0.0
+YouTube Livestream Downloader v1.1.0
 Downloads livestreams in configurable time segments as separate files.
 Uses yt-dlp or Streamlink plus ffmpeg under the hood.
 """
