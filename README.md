@@ -5,7 +5,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> A desktop GUI tool that records YouTube livestreams in timed segments, saving each chunk as a separate file. Built with PyQt6 and powered by yt-dlp + ffmpeg.
+> A desktop GUI tool that records YouTube and Streamlink-supported livestreams in timed segments, saving each chunk as a separate file. Built with PyQt6 and powered by yt-dlp, Streamlink, and ffmpeg.
 
 ![Screenshot](screenshot.png)
 
@@ -17,7 +17,7 @@ cd yt-livestream-downloader
 python yt_livestream_downloader.py
 ```
 
-PyQt6 and yt-dlp are auto-installed on first run. The only external dependency you need pre-installed is **ffmpeg**.
+PyQt6 and yt-dlp are auto-installed on first run. **ffmpeg** is required on PATH, and **Streamlink** is optional for non-YouTube providers.
 
 For the packaged Windows executable, install the **yt-dlp command-line tool** on `PATH` before launching; frozen builds do not run pip or ensurepip.
 
@@ -48,6 +48,7 @@ python generate_manifests.py --version 1.0.0 `
 | **Crash Resume** | Persists the next segment and offers to resume an interrupted recording when the same URL and folder are opened again |
 | **Integrity Manifest** | Writes an atomic `.yt_livestream_manifest.json` with each segment's size, SHA-256 checksum, quality, and partial status |
 | **Native DASH Capture** | Optional yt-dlp native fragment mode for DASH streams; automatically falls back to ffmpeg when a provider exposes an unsupported HLS live stream |
+| **Streamlink Backend** | Auto routes non-YouTube URLs such as Twitch and Kick through Streamlink, piping each bounded capture into ffmpeg; select yt-dlp explicitly when provider-specific YouTube features are needed |
 | **Super Chat Chapters** | Optional Audio Only mode captures YouTube live-chat paid messages, keeps the JSON sidecar, and embeds them as chapters in `.m4a` segments |
 | **Headless CLI** | Runs the same recorder without a window for NAS/server use, including resume, scheduling, subtitles, native fragments, and disk thresholds |
 | **Channel Watcher** | Polls a channel's public `/live` page and starts the recorder when yt-dlp reports a live video |
@@ -61,7 +62,7 @@ python generate_manifests.py --version 1.0.0 `
 | **Theme + Font Controls** | Persisted Mocha, Midnight, or Lavender palette with a 10-22 px application font override |
 | **Live-chat Sidecar** | Optional GUI or CLI capture keeps raw YouTube live-chat JSON for later analysis or chapter generation |
 | **Release Manifests** | Generates validated WinGet multi-file YAML and Scoop JSON with the exact Windows artifact URL and SHA-256 |
-| **Dependency Validation** | Startup check for yt-dlp and ffmpeg with version display |
+| **Dependency Validation** | Startup check for yt-dlp, optional Streamlink, and ffmpeg with version display |
 | **Crash Logging** | Writes `crash.log` on unhandled exceptions for debugging |
 | **Dark Theme** | Catppuccin Mocha dark interface |
 
@@ -72,6 +73,7 @@ python generate_manifests.py --version 1.0.0 `
 | **Python 3.8+** | [python.org](https://www.python.org/downloads/) |
 | **ffmpeg** | Must be on your system PATH |
 | **yt-dlp** | Auto-installed via pip if missing |
+| **Streamlink** | Optional; place `streamlink` on PATH for Twitch, Kick, and other supported non-YouTube providers |
 | **PyQt6** | Auto-installed via pip if missing |
 | **mpv** | Optional; place `mpv` on PATH to enable the embedded mini-player |
 
@@ -112,15 +114,16 @@ On macOS, run `python build_macos.py` on a macOS host with py2app installed. On 
 ## Usage
 
 1. **Launch** the app: `python yt_livestream_downloader.py`
-2. **Paste** a YouTube livestream URL
-3. **(Optional)** Click **Fetch Info** to verify the stream is live
-4. **Configure** segment length, quality, and output folder as needed
-5. For **Audio Only**, optionally enable **Super Chat chapters** to retain paid-message timestamps as embedded chapters
-6. Optionally enable **Automatic subtitles** to write subtitle sidecars beside each segment
-7. Optionally enter comma-separated **Chat chapter keywords** such as `milestone, giveaway`
-8. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
-9. Click **Stop** at any time — the current partial segment is saved
-10. **Double-click** any segment in the list to play it
+2. **Paste** a YouTube, Twitch, Kick, or other supported livestream URL
+3. Choose **Capture backend**: **Auto** uses yt-dlp for YouTube and Streamlink elsewhere; **Preview stream** is available for yt-dlp URLs
+4. **(Optional)** Click **Preview stream** to verify a yt-dlp/YouTube stream is live
+5. **Configure** segment length, quality, and output folder as needed
+6. For **Audio Only**, optionally enable **Super Chat chapters** to retain paid-message timestamps as embedded chapters (yt-dlp/YouTube only)
+7. Optionally enable **Automatic subtitles** to write subtitle sidecars beside each segment (yt-dlp only)
+8. Optionally enter comma-separated **Chat chapter keywords** such as `milestone, giveaway` (yt-dlp only)
+9. Click **Start Recording** — segments save automatically as `StreamTitle_seg001_TIMESTAMP.mp4`
+10. Click **Stop** at any time — the current partial segment is saved
+11. **Double-click** any segment in the list to play it
 
 ### Headless CLI
 
@@ -134,13 +137,22 @@ python yt_livestream_cli.py "https://www.youtube.com/watch?v=..." \
 
 Use `python yt_livestream_cli.py --help` for the complete option list. `--start-at` accepts a local ISO timestamp, and `Ctrl+C` requests a clean partial-segment finalization.
 
-For sequential multi-stream capture, pass a JSON queue. Items may override the shared CLI defaults with `output`, `start_at`, `quality`, `segment_minutes`, `retries`, and capture flags:
+For Twitch, Kick, and other Streamlink-supported providers, select the backend explicitly or let Auto route the URL:
+
+```bash
+python yt_livestream_cli.py "https://www.twitch.tv/channel" \
+  --backend auto --output ./captures --segment-minutes 30
+```
+
+`--backend streamlink` is equivalent when a non-YouTube provider is known to work with Streamlink. YouTube-only options such as `--native-fragments`, `--live-from-start`, subtitles, live-chat capture, and chapter keywords require `--backend yt-dlp`.
+
+For sequential multi-stream capture, pass a JSON queue. Items may override the shared CLI defaults with `output`, `start_at`, `quality`, `segment_minutes`, `retries`, `backend`, and capture flags:
 
 ```json
 {
   "items": [
     {"url": "https://www.youtube.com/watch?v=first", "start_at": "2026-08-03T20:00:00"},
-    {"url": "https://www.youtube.com/watch?v=second", "quality": "Audio Only", "superchat_chapters": true}
+    {"url": "https://www.twitch.tv/channel", "backend": "streamlink", "quality": "Audio Only"}
   ]
 }
 ```
@@ -205,7 +217,7 @@ When thumbnail extraction is enabled, numbered JPG files are written under `thum
                                                     └─────────┘
 ```
 
-Each segment launches a fresh yt-dlp process with `--downloader ffmpeg` and `--downloader-args "ffmpeg:-t <seconds>"`. The next writer is pre-armed before the boundary, and its overlap prefix is stream-copy trimmed so finalized segments stay contiguous while preserving independent files. Native DASH mode uses yt-dlp's fragment downloader and falls back to the same ffmpeg path when native capture cannot handle the stream.
+Each YouTube segment launches a fresh yt-dlp process with `--downloader ffmpeg` and `--downloader-args "ffmpeg:-t <seconds>"`. Streamlink-supported URLs launch Streamlink with `--stdout` and pipe the selected stream into a bounded ffmpeg muxer. The next writer is pre-armed before the boundary, and its overlap prefix is stream-copy trimmed so finalized segments stay contiguous while preserving independent files. Native DASH mode uses yt-dlp's fragment downloader and falls back to the same ffmpeg path when native capture cannot handle the stream.
 
 Auto-retry handles transient network failures. After 3 consecutive segment failures, the app assumes the stream has ended and stops.
 
@@ -218,7 +230,7 @@ Settings are persisted to:
 | Windows | `%APPDATA%\YTLivestreamDL\config.json` |
 | macOS/Linux | `~/YTLivestreamDL/config.json` |
 
-Saved fields: output directory, segment length, quality preset, retry count, native fragment preference, Super Chat chapter preference, automatic subtitle preference, thumbnail interval, silence-skip threshold, last URL.
+Saved fields: output directory, segment length, quality preset, retry count, capture backend, native fragment preference, Super Chat chapter preference, automatic subtitle preference, thumbnail interval, silence-skip threshold, last URL.
 
 ## Troubleshooting
 
@@ -226,6 +238,7 @@ Saved fields: output directory, segment length, quality preset, retry count, nat
 |-------|----------|
 | `ffmpeg: NOT FOUND` in header | Install ffmpeg and add to PATH. Restart the app. |
 | `yt-dlp: NOT FOUND` in header | Run `pip install yt-dlp` or let the app auto-install on next launch. |
+| `Streamlink optional` in header | Install Streamlink and add it to PATH before recording a non-YouTube URL. |
 | Packaged build cannot find yt-dlp | Install the yt-dlp command-line executable and make sure it is on `PATH`; packaged builds do not self-install Python packages. |
 | `Requested format is not available` | Change quality from a specific resolution to "Best" — livestreams have limited format options. |
 | JS runtime warning | Install deno (see Prerequisites). Not strictly required but recommended. |

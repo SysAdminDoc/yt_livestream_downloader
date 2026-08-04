@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from yt_livestream_cli import _parse_start_at, _queue_namespace, build_parser
+from yt_livestream_cli import _parse_start_at, _queue_namespace, build_parser, run
 
 
 def test_cli_parser_exposes_capture_controls():
@@ -32,6 +32,19 @@ def test_cli_parser_exposes_capture_controls():
     assert args.silence_skip == 3
     assert args.thumbnail_seconds == 30
     assert args.start_at == "2026-08-03T20:00:00"
+
+
+def test_cli_parser_exposes_streamlink_backend():
+    args = build_parser().parse_args(["https://www.twitch.tv/example", "--backend", "streamlink"])
+    assert args.backend == "streamlink"
+
+
+def test_cli_streamlink_rejects_ytdlp_only_controls(capsys):
+    args = build_parser().parse_args(
+        ["https://www.twitch.tv/example", "--backend", "streamlink", "--capture-live-chat"]
+    )
+    assert run(args) == 2
+    assert "require the yt-dlp backend" in capsys.readouterr().err
 
 
 def test_cli_start_at_accepts_iso_and_zulu_values():

@@ -14,6 +14,8 @@ from yt_livestream_core import (
     build_mpv_command,
     build_postprocess_command,
     build_rclone_copy_command,
+    build_streamlink_command,
+    build_streamlink_mux_command,
     build_thumbnail_command,
     build_embed_chapters_command,
     build_live_chat_command,
@@ -32,6 +34,7 @@ from yt_livestream_core import (
     next_cron_datetime,
     parse_cron_expression,
     quality_fallback_ladder,
+    resolve_capture_backend,
     safe_filename,
     video_chapter_events,
 )
@@ -78,6 +81,18 @@ def test_capture_and_trim_commands_keep_overlap_duration_explicit():
     )
     assert native_command[native_command.index("--downloader") + 1] == "native"
     assert "--downloader-args" not in native_command
+
+
+def test_backend_resolution_routes_non_youtube_urls_to_streamlink():
+    assert resolve_capture_backend("https://www.youtube.com/watch?v=abc") == "yt-dlp"
+    assert resolve_capture_backend("https://www.twitch.tv/channel") == "streamlink"
+    assert resolve_capture_backend("https://kick.com/channel", "yt-dlp") == "yt-dlp"
+    command = build_streamlink_command(["streamlink"], "https://www.twitch.tv/channel", "Audio Only")
+    assert command[:3] == ["streamlink", "--stdout", "--retry-open"]
+    assert command[-2:] == ["https://www.twitch.tv/channel", "audio_only"]
+    mux = build_streamlink_mux_command("ffmpeg", "segment.m4a", "Audio Only", 120)
+    assert mux[mux.index("-t") + 1] == "120"
+    assert "pipe:0" in mux
 
 
 def test_channel_watch_command_and_live_result_parser():

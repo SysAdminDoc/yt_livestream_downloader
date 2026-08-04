@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 YouTube Livestream Downloader v1.0.0
-Downloads YouTube livestreams in configurable time segments as separate files.
-Uses yt-dlp + ffmpeg under the hood.
+Downloads livestreams in configurable time segments as separate files.
+Uses yt-dlp or Streamlink plus ffmpeg under the hood.
 """
 
 # Dependency bootstrap intentionally precedes optional imports.
 # ruff: noqa: E402
 import importlib.util
 import html
+import locale
 import multiprocessing
 import os
 import queue
@@ -20,6 +21,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 # codex-branding:start
@@ -79,6 +81,8 @@ from yt_livestream_core import (
     build_mpv_command,
     build_capture_command,
     build_live_chat_command,
+    build_streamlink_command,
+    build_streamlink_mux_command,
     build_trim_command,
     chapter_events_for_segment,
     check_disk_space,
@@ -90,6 +94,7 @@ from yt_livestream_core import (
     parse_progress_line,
     parse_superchat_events,
     quality_fallback_ladder,
+    resolve_capture_backend,
     safe_filename,
     video_chapter_events,
 )
@@ -549,7 +554,8 @@ def check_dependency(name):
             path = shutil.which(name)
             if not path:
                 return None
-            r = subprocess.run([path, '-version'], capture_output=True, text=True, timeout=10)
+            version_flag = '--version' if name == 'streamlink' else '-version'
+            r = subprocess.run([path, version_flag], capture_output=True, text=True, timeout=10)
             for line in r.stdout.split('\n'):
                 if 'version' in line.lower():
                     return line.strip()
@@ -691,10 +697,11 @@ class _CaptureSlot:
     duration_seconds: int
     output_queue: object
     native_mode: bool = False
+    source_process: object | None = None
 
 
 class SegmentDownloader(QThread):
-    """Downloads a livestream in timed segments using yt-dlp."""
+    """Downloads a livestream in timed segments using the selected backend."""
     log_message = pyqtSignal(str)
     segment_complete = pyqtSignal(str, float)  # filepath, size_bytes
     status_update = pyqtSignal(str)
@@ -720,6 +727,7 @@ class SegmentDownloader(QThread):
         chapter_keywords=None,
         warn_free_gb=5.0,
         pause_free_gb=1.0,
+        backend="auto",
         parent=None,
     ):
         super().__init__(parent)
@@ -740,6 +748,8 @@ class SegmentDownloader(QThread):
         self.chapter_keywords = list(chapter_keywords or [])
         self.warn_free_gb = warn_free_gb
         self.pause_free_gb = pause_free_gb
+        self.requested_backend = backend
+        self.backend = "auto"
         self._stop_requested = False
         self._current_process = None
         self._active_slots = []
@@ -756,11 +766,8 @@ class SegmentDownloader(QThread):
     def request_stop(self):
         self._stop_requested = True
         for slot in list(self._active_slots):
-            try:
-                if slot.process.poll() is None:
-                    slot.process.terminate()
-            except Exception:
-                pass
+            self._terminate_process(slot.process)
+            self._terminate_process(slot.source_process)
 
     def _check_disk_guardrail(self):
         now = time.monotonic()
@@ -795,6 +802,10 @@ class SegmentDownloader(QThread):
         if getattr(sys, "frozen", False):
             return []
         return [sys.executable, '-m', 'yt_dlp']
+
+    def _get_streamlink_cmd(self):
+        path = shutil.which("streamlink")
+        return [path] if path else []
 
     def _sanitize_filename(self, name):
         """Clean a string for safe use as a filename."""
@@ -885,7 +896,7 @@ class SegmentDownloader(QThread):
                     try:
                         self._current_process = subprocess.Popen(
                             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1,
+                            text=True, encoding=locale.getpreferredencoding(False), errors="replace", bufsize=1,
                             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
                         )
 
@@ -1000,26 +1011,63 @@ class SegmentDownloader(QThread):
         )
         duration_seconds = segment_secs + trim_seconds
         native_mode = self.use_native_segmenter if use_native_segmenter is None else use_native_segmenter
-        command = build_capture_command(
-            ytdlp_cmd,
-            self.url,
-            raw_path,
-            quality,
-            duration_seconds,
-            use_native_segmenter=native_mode,
-            live_from_start=self.live_from_start,
-            write_subtitles=self.write_subtitles,
-            subtitle_languages=self.subtitle_languages,
-        )
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            creationflags=creationflags,
-        )
+        source_process = None
+        try:
+            if self.backend == "streamlink":
+                source_process = subprocess.Popen(
+                    build_streamlink_command(ytdlp_cmd, self.url, quality),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
+                process = subprocess.Popen(
+                    build_streamlink_mux_command(
+                        shutil.which("ffmpeg") or "ffmpeg",
+                        raw_path,
+                        quality,
+                        duration_seconds,
+                    ),
+                    stdin=source_process.stdout,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding=locale.getpreferredencoding(False),
+                    errors="replace",
+                    bufsize=1,
+                    creationflags=creationflags,
+                )
+                if source_process.stdout is not None:
+                    source_process.stdout.close()
+            else:
+                process = subprocess.Popen(
+                    build_capture_command(
+                        ytdlp_cmd,
+                        self.url,
+                        raw_path,
+                        quality,
+                        duration_seconds,
+                        use_native_segmenter=native_mode,
+                        live_from_start=self.live_from_start,
+                        write_subtitles=self.write_subtitles,
+                        subtitle_languages=self.subtitle_languages,
+                    ),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding=locale.getpreferredencoding(False),
+                    errors="replace",
+                    bufsize=1,
+                    creationflags=creationflags,
+                )
+        except Exception:
+            if source_process is not None:
+                try:
+                    source_process.terminate()
+                    source_process.wait(timeout=5)
+                except Exception:
+                    pass
+            raise
         output_queue = queue.Queue()
         threading.Thread(
             target=self._read_process_output,
@@ -1037,12 +1085,13 @@ class SegmentDownloader(QThread):
             duration_seconds=duration_seconds,
             output_queue=output_queue,
             native_mode=native_mode,
+            source_process=source_process,
         )
         self._active_slots.append(slot)
         self._current_process = process
         self.status_update.emit(f"Recording segment {segment_number}...")
         self.log_message.emit(
-            f"\n--- Segment {segment_number} | {datetime.now().strftime('%H:%M:%S')} ---"
+            f"\n--- Segment {segment_number} | {datetime.now().strftime('%H:%M:%S')} | {self.backend} ---"
         )
         self.log_message.emit(f"File: {os.path.basename(final_path)} | quality: {quality}")
         if trim_seconds:
@@ -1069,8 +1118,9 @@ class SegmentDownloader(QThread):
                 f" / {self.segment_minutes:02d}:00{progress}"
             )
 
-    def _terminate_slot(self, slot):
-        process = slot.process
+    def _terminate_process(self, process):
+        if process is None:
+            return
         try:
             if process.poll() is None:
                 process.terminate()
@@ -1083,6 +1133,10 @@ class SegmentDownloader(QThread):
                 pass
         except Exception:
             pass
+
+    def _terminate_slot(self, slot):
+        self._terminate_process(slot.process)
+        self._terminate_process(slot.source_process)
 
     def _discard_slot(self, slot):
         self._terminate_slot(slot)
@@ -1153,6 +1207,7 @@ class SegmentDownloader(QThread):
                 self.log_message.emit(f"Subtitle sidecar move skipped: {exc}")
 
     def _finalize_slot(self, slot, partial=False):
+        self._terminate_process(slot.source_process)
         filepath = self._trim_slot(slot)
         try:
             self._active_slots.remove(slot)
@@ -1238,7 +1293,7 @@ class SegmentDownloader(QThread):
                         filepath = self._finalize_slot(slot)
                         if filepath:
                             return filepath
-                    self.log_message.emit(f"yt-dlp exited with code {slot.process.returncode}")
+                    self.log_message.emit(f"{self.backend} capture exited with code {slot.process.returncode}")
                     self._discard_slot(slot)
         self.use_native_segmenter = requested_native
         return None
@@ -1385,6 +1440,11 @@ class SegmentDownloader(QThread):
         safe_title = safe_filename(self.filename_prefix)
         if self.filename_prefix and not self.chapter_keywords:
             return safe_title
+        if self.backend == "streamlink":
+            parsed = urlparse(self.url)
+            host = (parsed.hostname or "stream").removeprefix("www.").split(".", 1)[0]
+            channel = next((part for part in parsed.path.split("/") if part), "livestream")
+            return safe_filename(f"{host}_{channel}")
         try:
             info_cmd = ytdlp_cmd + ["--dump-json", "--no-download", self.url]
             result = subprocess.run(
@@ -1405,13 +1465,22 @@ class SegmentDownloader(QThread):
     def run(self):
         try:
             os.makedirs(self.output_dir, exist_ok=True)
-            ytdlp_cmd = self._get_ytdlp_cmd()
-            if not ytdlp_cmd:
+            self.backend = resolve_capture_backend(self.url, self.requested_backend)
+            if self.backend == "streamlink":
+                self.use_native_segmenter = False
+                self.live_from_start = False
+                self.write_subtitles = False
+                self.capture_superchats = False
+                self.capture_live_chat = False
+                self.chapter_keywords = []
+            capture_cmd = self._get_ytdlp_cmd() if self.backend == "yt-dlp" else self._get_streamlink_cmd()
+            if not capture_cmd:
+                tool_name = "yt-dlp" if self.backend == "yt-dlp" else "Streamlink"
                 self.error.emit(
-                    "yt-dlp is not available on PATH. Install the yt-dlp command-line tool before recording."
+                    f"{tool_name} is not available on PATH. Install it before recording."
                 )
                 return
-            self.log_message.emit(f"yt-dlp: {' '.join(ytdlp_cmd)}")
+            self.log_message.emit(f"Backend: {self.backend} ({' '.join(capture_cmd)})")
             self.log_message.emit(f"Output: {self.output_dir}")
             self.log_message.emit(f"Segments: {self.segment_minutes} min | Quality: {self.quality}")
             self.log_message.emit(f"Retries: {self.max_retries} (delay {self.retry_delay}s)")
@@ -1425,7 +1494,7 @@ class SegmentDownloader(QThread):
                 self.log_message.emit("Warning: available disk space is below the configured warning threshold.")
 
             self.status_update.emit("Fetching stream info...")
-            safe_title = self._resolve_title(ytdlp_cmd)
+            safe_title = self._resolve_title(capture_cmd)
             if not self.resume_session:
                 self.resume_session = RecordingSession(
                     url=self.url,
@@ -1442,13 +1511,14 @@ class SegmentDownloader(QThread):
             self.resume_session.save()
             self._manifest = ManifestStore.open(self.output_dir, self.resume_session.session_id)
             self.log_message.emit(f"Starting at segment {segment_num}; manifest: {self._manifest.path.name}")
-            self._start_chat_capture(ytdlp_cmd, safe_title, segment_num)
+            if self.backend == "yt-dlp":
+                self._start_chat_capture(capture_cmd, safe_title, segment_num)
 
             segment_secs = max(1, self.segment_minutes * 60)
             overlap = min(OVERLAP_SECONDS, max(0, segment_secs - 1))
             consecutive_failures = 0
             pipeline_enabled = not self.use_native_segmenter
-            current = self._launch_slot(ytdlp_cmd, safe_title, segment_num, segment_secs, self.quality)
+            current = self._launch_slot(capture_cmd, safe_title, segment_num, segment_secs, self.quality)
             next_slot = None
             next_start = current.started_at + segment_secs - overlap
 
@@ -1459,7 +1529,7 @@ class SegmentDownloader(QThread):
                 now = time.monotonic()
                 if pipeline_enabled and next_slot is None and now >= next_start:
                     next_slot = self._launch_slot(
-                        ytdlp_cmd,
+                        capture_cmd,
                         safe_title,
                         current.segment_number + 1,
                         segment_secs,
@@ -1485,7 +1555,7 @@ class SegmentDownloader(QThread):
                         next_start = current.started_at + segment_secs
                     else:
                         current = self._launch_slot(
-                            ytdlp_cmd,
+                            capture_cmd,
                             safe_title,
                             current.segment_number + 1,
                             segment_secs,
@@ -1501,7 +1571,7 @@ class SegmentDownloader(QThread):
                     self._discard_slot(next_slot)
                     next_slot = None
                 recovered = self._capture_with_retries(
-                    ytdlp_cmd,
+                    capture_cmd,
                     safe_title,
                     failed_segment,
                     segment_secs,
@@ -1520,7 +1590,7 @@ class SegmentDownloader(QThread):
                     clear_session(self.output_dir)
                     break
                 current = self._launch_slot(
-                    ytdlp_cmd,
+                    capture_cmd,
                     safe_title,
                     failed_segment + 1,
                     segment_secs,
@@ -1610,6 +1680,7 @@ class MainWindow(QMainWindow):
         self._previewed_url = None
         self._ffmpeg_ok = False
         self._ytdlp_ok = False
+        self._streamlink_ok = False
         self._resume_session = None
 
         self._config = load_config()
@@ -1668,7 +1739,7 @@ class MainWindow(QMainWindow):
         title = QLabel(APP_NAME)
         title.setObjectName("titleLabel")
         subtitle = QLabel(
-            "Record YouTube livestreams as clean, timestamped segments with scheduled starts, calmer retries, and clearer session feedback."
+            "Record YouTube and Streamlink-supported livestreams as clean, timestamped segments with scheduled starts, calmer retries, and clearer session feedback."
         )
         subtitle.setObjectName("subtitleLabel")
         subtitle.setWordWrap(True)
@@ -1677,9 +1748,11 @@ class MainWindow(QMainWindow):
         badge_row.setSpacing(8)
         self.readiness_badge = StatusBadge("Idle", "neutral")
         self.dep_ytdlp_label = StatusBadge("yt-dlp: checking", "neutral")
+        self.dep_streamlink_label = StatusBadge("streamlink: checking", "neutral")
         self.dep_ffmpeg_label = StatusBadge("ffmpeg: checking", "neutral")
         badge_row.addWidget(self.readiness_badge)
         badge_row.addWidget(self.dep_ytdlp_label)
+        badge_row.addWidget(self.dep_streamlink_label)
         badge_row.addWidget(self.dep_ffmpeg_label)
         badge_row.addStretch()
 
@@ -1777,7 +1850,7 @@ class MainWindow(QMainWindow):
         sg.addWidget(url_label, 0, 0)
         self.url_input = QLineEdit()
         self.url_input.setClearButtonEnabled(True)
-        self.url_input.setPlaceholderText("https://www.youtube.com/watch?v=... or https://youtu.be/...")
+        self.url_input.setPlaceholderText("https://www.youtube.com/watch?v=..., twitch.tv/channel, or kick.com/channel")
         sg.addWidget(self.url_input, 0, 1, 1, 2)
         self.fetch_info_btn = QPushButton("Preview stream")
         self.fetch_info_btn.setObjectName("secondaryBtn")
@@ -1935,6 +2008,18 @@ class MainWindow(QMainWindow):
         self.silence_skip_spin.setFixedWidth(120)
         self.silence_skip_spin.setToolTip("Remove Audio Only silence runs longer than this amount; 0 disables.")
         sg.addWidget(self.silence_skip_spin, 18, 3)
+        backend_label = QLabel("Capture backend")
+        backend_label.setObjectName("fieldLabel")
+        sg.addWidget(backend_label, 19, 0)
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["Auto", "yt-dlp", "Streamlink"])
+        self.backend_combo.setFixedWidth(140)
+        self.backend_combo.setToolTip("Auto uses yt-dlp for YouTube and Streamlink for other live URLs.")
+        sg.addWidget(self.backend_combo, 19, 1)
+        backend_hint = QLabel("Auto routes Twitch, Kick, and other supported non-YouTube URLs through Streamlink.")
+        backend_hint.setObjectName("helperLabel")
+        backend_hint.setWordWrap(True)
+        sg.addWidget(backend_hint, 19, 2, 1, 2)
         warn_disk_label = QLabel("Warn below")
         warn_disk_label.setObjectName("fieldLabel")
         sg.addWidget(warn_disk_label, 14, 0)
@@ -2118,6 +2203,8 @@ class MainWindow(QMainWindow):
         self.capture_live_chat_check.toggled.connect(self._refresh_descriptions)
         self.thumbnail_spin.valueChanged.connect(self._refresh_descriptions)
         self.silence_skip_spin.valueChanged.connect(self._refresh_descriptions)
+        self.backend_combo.currentTextChanged.connect(self._refresh_descriptions)
+        self.backend_combo.currentTextChanged.connect(self._refresh_url_guidance)
 
     def _restore_settings(self):
         c = self._config
@@ -2161,6 +2248,8 @@ class MainWindow(QMainWindow):
             self.thumbnail_spin.setValue(int(c['thumbnail_seconds']))
         if 'silence_skip_seconds' in c:
             self.silence_skip_spin.setValue(float(c['silence_skip_seconds']))
+        if c.get('backend') in {"Auto", "yt-dlp", "Streamlink"}:
+            self.backend_combo.setCurrentText(c['backend'])
         if 'last_url' in c:
             self.url_input.setText(c['last_url'])
 
@@ -2185,6 +2274,7 @@ class MainWindow(QMainWindow):
             'capture_live_chat': self.capture_live_chat_check.isChecked(),
             'thumbnail_seconds': self.thumbnail_spin.value(),
             'silence_skip_seconds': self.silence_skip_spin.value(),
+            'backend': self.backend_combo.currentText(),
             'last_url': self.url_input.text().strip(),
         })
         save_config(self._config)
@@ -2221,6 +2311,23 @@ class MainWindow(QMainWindow):
     def _apply_visual_settings(self, *_args):
         apply_theme(self.theme_combo.currentText(), self.font_size_spin.value())
 
+    def _requested_backend(self):
+        return {
+            "Auto": "auto",
+            "yt-dlp": "yt-dlp",
+            "Streamlink": "streamlink",
+        }.get(self.backend_combo.currentText(), "auto")
+
+    def _effective_backend(self, url=None):
+        target_url = self.url_input.text().strip() if url is None else str(url).strip()
+        requested = self._requested_backend()
+        if not target_url:
+            return "streamlink" if requested == "streamlink" else "yt-dlp"
+        try:
+            return resolve_capture_backend(target_url, requested)
+        except ValueError:
+            return "yt-dlp"
+
     def _set_stream_preview_placeholder(
         self,
         title="No stream preview yet",
@@ -2244,19 +2351,30 @@ class MainWindow(QMainWindow):
         output_dir = self.output_input.text().strip() or self._default_output
         extension = ".m4a" if quality == "Audio Only" else ".mp4"
         quality_phrase = "audio-only" if quality == "Audio Only" else quality
-        backend_phrase = (
-            "native DASH fragments with HLS fallback"
-            if self.native_check.isChecked()
-            else "overlap-aware ffmpeg capture"
-        )
+        effective_backend = self._effective_backend()
+        yt_backend = effective_backend == "yt-dlp"
+        backend_name = "yt-dlp" if yt_backend else "Streamlink"
+        if self._requested_backend() == "auto":
+            backend_name = f"auto → {backend_name}"
+        if yt_backend and self.native_check.isChecked():
+            capture_method = "native DASH fragments with HLS fallback"
+        elif yt_backend:
+            capture_method = "overlap-aware ffmpeg capture"
+        else:
+            capture_method = "Streamlink stdout piped into bounded ffmpeg capture"
+        backend_phrase = f"{backend_name} ({capture_method})"
         superchat_phrase = ""
-        if self.superchat_check.isChecked() and quality == "Audio Only":
+        if yt_backend and self.superchat_check.isChecked() and quality == "Audio Only":
             superchat_phrase = " Super Chat messages are embedded as chapters."
-        elif self.superchat_check.isChecked():
+        elif yt_backend and self.superchat_check.isChecked():
             superchat_phrase = " Super Chat chapters apply when Quality is Audio Only."
-        self.superchat_check.setEnabled(quality == "Audio Only" and not self._session_locked)
-        subtitle_phrase = " Automatic subtitles are written beside each segment." if self.subtitle_check.isChecked() else ""
-        keyword_phrase = " Chapter marks are also written for matching live-chat keywords." if self.chapter_keywords_input.text().strip() else ""
+        self.native_check.setEnabled(yt_backend and not self._session_locked)
+        self.superchat_check.setEnabled(yt_backend and quality == "Audio Only" and not self._session_locked)
+        subtitle_phrase = " Automatic subtitles are written beside each segment." if yt_backend and self.subtitle_check.isChecked() else ""
+        self.subtitle_check.setEnabled(yt_backend and not self._session_locked)
+        keyword_phrase = " Chapter marks are also written for matching live-chat keywords." if yt_backend and self.chapter_keywords_input.text().strip() else ""
+        self.chapter_keywords_input.setEnabled(yt_backend and not self._session_locked)
+        self.capture_live_chat_check.setEnabled(yt_backend and not self._session_locked)
         self.h265_check.setEnabled(quality != "Audio Only" and not self._session_locked)
         self.pause_disk_spin.setMaximum(self.warn_disk_spin.value())
         pipeline_options = []
@@ -2276,11 +2394,11 @@ class MainWindow(QMainWindow):
             f" Disk guardrails: warn below {self.warn_disk_spin.value():g} GB, auto-pause below "
             f"{self.pause_disk_spin.value():g} GB."
         )
-        chat_phrase = " Live-chat JSON is retained." if self.capture_live_chat_check.isChecked() else ""
+        chat_phrase = " Live-chat JSON is retained." if yt_backend and self.capture_live_chat_check.isChecked() else ""
 
         capture_summary = (
             f"{segment_minutes}-minute {extension} segments in {quality_phrase} quality, with "
-            f"{retries} retry{'ies' if retries != 1 else 'y'} per segment via {backend_phrase}."
+            f"{retries} retry{'ies' if retries != 1 else 'y'} per segment using {backend_phrase}."
             f"{superchat_phrase}"
             f"{subtitle_phrase}"
             f"{keyword_phrase}"
@@ -2312,7 +2430,13 @@ class MainWindow(QMainWindow):
         url = self.url_input.text().strip()
 
         if not url:
-            self.url_hint_label.setText("Paste a youtube.com or youtu.be livestream link to enable previewing and recording.")
+            self.url_hint_label.setText("Paste a YouTube, Twitch, Kick, or other supported livestream URL to enable recording.")
+            self.url_input.setProperty("state", "default")
+        elif self._effective_backend(url) == "streamlink":
+            backend_label = "Auto selected Streamlink" if self._requested_backend() == "auto" else "Streamlink is selected"
+            self.url_hint_label.setText(
+                f"{backend_label} for this non-YouTube URL. Preview is available for yt-dlp/YouTube links; start recording directly here."
+            )
             self.url_input.setProperty("state", "default")
         elif looks_like_youtube_url(url):
             if self._previewed_url and url == self._previewed_url and self._stream_info:
@@ -2322,7 +2446,7 @@ class MainWindow(QMainWindow):
             self.url_input.setProperty("state", "default")
         else:
             self.url_hint_label.setText(
-                "This does not look like a typical YouTube URL. You can still try it, but previewing first is strongly recommended."
+                "yt-dlp is forced for this non-YouTube URL. Previewing first is available, but the provider must be supported by yt-dlp."
             )
             self.url_input.setProperty("state", "warning")
 
@@ -2331,13 +2455,15 @@ class MainWindow(QMainWindow):
     def _refresh_action_availability(self):
         url_present = bool(self.url_input.text().strip())
         preview_busy = self.info_worker is not None and self.info_worker.isRunning()
+        effective_backend = self._effective_backend()
+        capture_backend_ok = self._ytdlp_ok if effective_backend == "yt-dlp" else self._streamlink_ok
 
         self.fetch_info_btn.setEnabled(
-            url_present and self._ytdlp_ok and not preview_busy and not self._session_locked
+            url_present and effective_backend == "yt-dlp" and self._ytdlp_ok and not preview_busy and not self._session_locked
         )
         postprocess_busy = self.postprocess_worker is not None
         self.start_btn.setEnabled(
-            url_present and self._ytdlp_ok and self._ffmpeg_ok and not self._session_locked and not postprocess_busy
+            url_present and capture_backend_ok and self._ffmpeg_ok and not self._session_locked and not postprocess_busy
         )
         self.stop_btn.setEnabled(self._session_locked)
 
@@ -2381,6 +2507,17 @@ class MainWindow(QMainWindow):
                 "Blocked",
                 "Install ffmpeg before starting a session",
                 "yt-dlp can be installed automatically, but ffmpeg must already be on your PATH for segmented recording.",
+                "warning",
+            )
+            self._set_state_value("Blocked", "warning")
+            return
+
+        effective_backend = self._effective_backend(url)
+        if effective_backend == "streamlink" and not self._streamlink_ok:
+            self._set_banner_state(
+                "Blocked",
+                "Install Streamlink for this provider",
+                "Auto routing selected Streamlink for this non-YouTube URL. Install it and restart the app before recording.",
                 "warning",
             )
             self._set_state_value("Blocked", "warning")
@@ -2468,15 +2605,18 @@ class MainWindow(QMainWindow):
                 filename_badge=("Filename auto", "neutral"),
             )
         self._refresh_url_guidance()
+        self._refresh_descriptions()
         self._refresh_action_availability()
         if not self.worker and not self._schedule_timer.isActive():
             self._refresh_idle_state()
 
     def _check_deps(self):
         yt_version = check_dependency('yt-dlp')
+        streamlink_version = check_dependency('streamlink')
         ffmpeg_version = check_dependency('ffmpeg')
 
         self._ytdlp_ok = bool(yt_version)
+        self._streamlink_ok = bool(streamlink_version)
         self._ffmpeg_ok = bool(ffmpeg_version)
 
         if yt_version:
@@ -2486,6 +2626,15 @@ class MainWindow(QMainWindow):
             self.dep_ytdlp_label.set_status("yt-dlp missing", "warning")
             self.dep_ytdlp_label.setToolTip(
                 "yt-dlp can usually be auto-installed on startup if Python can install packages."
+            )
+
+        if streamlink_version:
+            self.dep_streamlink_label.set_status(f"Streamlink {streamlink_version.split()[0]}", "success")
+            self.dep_streamlink_label.setToolTip(streamlink_version)
+        else:
+            self.dep_streamlink_label.set_status("Streamlink optional", "warning")
+            self.dep_streamlink_label.setToolTip(
+                "Install Streamlink to record Twitch, Kick, and other non-YouTube providers. YouTube uses yt-dlp."
             )
 
         if ffmpeg_version:
@@ -2661,11 +2810,45 @@ class MainWindow(QMainWindow):
             self._set_banner_state(
                 "Needs URL",
                 "Paste a livestream URL before starting",
-                "Add a youtube.com or youtu.be livestream link, then preview it or start the session directly.",
+                "Add a YouTube, Twitch, Kick, or other supported livestream link, then preview it or start the session directly.",
                 "warning",
             )
             self._set_state_value("Idle", "warning")
             return
+
+        try:
+            backend = resolve_capture_backend(url, self._requested_backend())
+        except ValueError as exc:
+            self._set_banner_state("Blocked", "Unsupported capture backend", str(exc), "danger")
+            self._set_state_value("Blocked", "danger")
+            return
+
+        if backend == "streamlink" and not shutil.which("streamlink"):
+            self._check_deps()
+            self._set_banner_state(
+                "Blocked",
+                "Streamlink is required for this URL",
+                "Install Streamlink and make sure it is on PATH, or select yt-dlp when that provider is supported.",
+                "danger",
+            )
+            self._set_state_value("Blocked", "danger")
+            self._set_recording_state(False)
+            self.statusBar().showMessage("Streamlink not found")
+            return
+
+        if backend == "yt-dlp" and not self._ytdlp_ok:
+            self._check_deps()
+            if not self._ytdlp_ok:
+                self._set_banner_state(
+                    "Blocked",
+                    "yt-dlp is required for this URL",
+                    "Install yt-dlp, restart the app, and then try again.",
+                    "danger",
+                )
+                self._set_state_value("Blocked", "danger")
+                self._set_recording_state(False)
+                self.statusBar().showMessage("yt-dlp not found")
+                return
 
         if not shutil.which('ffmpeg'):
             self._check_deps()
@@ -2723,13 +2906,17 @@ class MainWindow(QMainWindow):
             retry_delay=10,
             filename_prefix=prefix,
             resume_session=self._resume_session if self.resume_check.isChecked() else None,
-            use_native_segmenter=self.native_check.isChecked(),
-            capture_superchats=self.superchat_check.isChecked(),
-            capture_live_chat=self.capture_live_chat_check.isChecked(),
-            write_subtitles=self.subtitle_check.isChecked(),
-            chapter_keywords=[keyword.strip() for keyword in self.chapter_keywords_input.text().split(",") if keyword.strip()],
+            use_native_segmenter=self.native_check.isChecked() and backend == "yt-dlp",
+            capture_superchats=self.superchat_check.isChecked() and backend == "yt-dlp",
+            capture_live_chat=self.capture_live_chat_check.isChecked() and backend == "yt-dlp",
+            write_subtitles=self.subtitle_check.isChecked() and backend == "yt-dlp",
+            chapter_keywords=(
+                [keyword.strip() for keyword in self.chapter_keywords_input.text().split(",") if keyword.strip()]
+                if backend == "yt-dlp" else []
+            ),
             warn_free_gb=self.warn_disk_spin.value(),
             pause_free_gb=self.pause_disk_spin.value(),
+            backend=backend,
         )
         self.worker.log_message.connect(self._log)
         self.worker.segment_complete.connect(self._on_segment_complete)
@@ -2781,10 +2968,14 @@ class MainWindow(QMainWindow):
         self.schedule_check.setEnabled(not recording)
         self.schedule_dt.setEnabled(not recording and self.schedule_check.isChecked())
         self.resume_check.setEnabled(not recording and self._resume_session is not None)
-        self.native_check.setEnabled(not recording)
-        self.superchat_check.setEnabled(not recording and self.quality_combo.currentText() == "Audio Only")
-        self.subtitle_check.setEnabled(not recording)
-        self.chapter_keywords_input.setEnabled(not recording)
+        self.backend_combo.setEnabled(not recording)
+        yt_backend = self._effective_backend() == "yt-dlp"
+        self.native_check.setEnabled(not recording and yt_backend)
+        self.superchat_check.setEnabled(
+            not recording and yt_backend and self.quality_combo.currentText() == "Audio Only"
+        )
+        self.subtitle_check.setEnabled(not recording and yt_backend)
+        self.chapter_keywords_input.setEnabled(not recording and yt_backend)
         self.concat_check.setEnabled(not recording)
         self.h265_check.setEnabled(not recording and self.quality_combo.currentText() != "Audio Only")
         self.loudnorm_check.setEnabled(not recording)
@@ -2792,7 +2983,7 @@ class MainWindow(QMainWindow):
         self.pause_disk_spin.setEnabled(not recording)
         self.theme_combo.setEnabled(not recording)
         self.font_size_spin.setEnabled(not recording)
-        self.capture_live_chat_check.setEnabled(not recording)
+        self.capture_live_chat_check.setEnabled(not recording and yt_backend)
         self.thumbnail_spin.setEnabled(not recording)
         self.silence_skip_spin.setEnabled(
             not recording and self.quality_combo.currentText() == "Audio Only"

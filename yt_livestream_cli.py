@@ -19,6 +19,7 @@ from urllib import request as urllib_request
 from yt_livestream_core import (
     APP_NAME,
     APP_VERSION,
+    BACKEND_CHOICES,
     build_channel_watch_command,
     build_notification_payload,
     build_rclone_copy_command,
@@ -26,6 +27,7 @@ from yt_livestream_core import (
     load_session,
     next_cron_datetime,
     parse_channel_live_result,
+    resolve_capture_backend,
 )
 from yt_livestream_postprocess import PostProcessError, run_postprocess
 
@@ -37,9 +39,9 @@ QUALITY_CHOICES = ("Best", "1080p", "720p", "480p", "Audio Only")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="yt-livestream-downloader",
-        description="Record a YouTube livestream as resilient, timestamped segments without opening the GUI.",
+        description="Record a livestream as resilient, timestamped segments without opening the GUI.",
     )
-    parser.add_argument("url", nargs="?", help="YouTube livestream URL")
+    parser.add_argument("url", nargs="?", help="Livestream URL supported by the selected backend")
     parser.add_argument("--queue-file", type=Path, help="JSON queue with one URL and optional per-stream overrides per item")
     parser.add_argument("--watch-channel", help="Poll a public channel URL until a live video appears")
     parser.add_argument("--poll-seconds", type=int, default=60, metavar="N", help="Channel poll interval")
@@ -53,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--silence-skip", type=float, default=0.0, metavar="SECONDS", help="Remove Audio Only silence runs longer than this threshold")
     parser.add_argument("--thumbnail-seconds", type=int, default=0, metavar="N", help="Extract a thumbnail every N seconds (0 disables)")
     parser.add_argument("--rclone-remote", help="Upload completed segment files to an rclone remote, for example drive:YT-Livestreams")
+    parser.add_argument("--backend", choices=BACKEND_CHOICES, default="auto", help="Capture backend: auto uses yt-dlp for YouTube and Streamlink elsewhere")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Destination folder")
     parser.add_argument("--segment-minutes", type=int, default=30, metavar="N", help="Segment length (1-360 minutes)")
     parser.add_argument("--quality", choices=QUALITY_CHOICES, default="Best")
@@ -127,6 +130,7 @@ def _queue_namespace(base: argparse.Namespace, item: dict) -> argparse.Namespace
         "silence_skip",
         "thumbnail_seconds",
         "rclone_remote",
+        "backend",
     ):
         if key in item:
             values[key] = item[key]
@@ -352,6 +356,31 @@ def run(args: argparse.Namespace) -> int:
     if args.silence_skip and args.quality != "Audio Only":
         print("error: --silence-skip requires --quality 'Audio Only'", file=sys.stderr)
         return 2
+    try:
+        backend = resolve_capture_backend(args.url, args.backend)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if backend == "streamlink":
+        unsupported = []
+        if args.native_fragments:
+            unsupported.append("--native-fragments")
+        if args.live_from_start:
+            unsupported.append("--live-from-start")
+        if args.write_auto_sub:
+            unsupported.append("--write-auto-sub")
+        if args.superchat_chapters:
+            unsupported.append("--superchat-chapters")
+        if args.capture_live_chat:
+            unsupported.append("--capture-live-chat")
+        if args.chapter_keywords:
+            unsupported.append("--chapter-keyword")
+        if unsupported:
+            print(
+                f"error: {', '.join(unsupported)} require the yt-dlp backend; use --backend yt-dlp or remove them",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         start_at = _parse_start_at(args.start_at)
@@ -399,6 +428,7 @@ def run(args: argparse.Namespace) -> int:
             chapter_keywords=args.chapter_keywords,
             warn_free_gb=args.warn_free_gb,
             pause_free_gb=args.pause_free_gb,
+            backend=backend,
         )
         holder["worker"] = worker
         worker.log_message.connect(lambda message: print(message, flush=True))

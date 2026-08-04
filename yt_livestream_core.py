@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from urllib.parse import urlparse
 
 
 SESSION_SCHEMA_VERSION = 1
@@ -26,6 +27,7 @@ MANIFEST_FILENAME = ".yt_livestream_manifest.json"
 OVERLAP_SECONDS = 2
 APP_NAME = "YT Livestream Downloader"
 APP_VERSION = "1.0.0"
+BACKEND_CHOICES = ("auto", "yt-dlp", "streamlink")
 
 
 FORMAT_SELECTORS: dict[str, str | None] = {
@@ -71,6 +73,100 @@ def quality_fallback_ladder(quality: str) -> list[str]:
     if quality not in ordered:
         return ["Best"]
     return [quality, *[candidate for candidate in ordered if candidate != quality and ordered.index(candidate) > ordered.index(quality)]]
+
+
+def is_youtube_url(url: str) -> bool:
+    """Return whether a URL belongs to YouTube's normal web domains."""
+
+    host = (urlparse(str(url)).hostname or "").casefold().rstrip(".")
+    return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def resolve_capture_backend(url: str, backend: str = "auto") -> str:
+    """Resolve the requested backend, routing non-YouTube URLs to Streamlink in auto mode."""
+
+    normalized = str(backend or "auto").strip().casefold()
+    aliases = {"yt_dlp": "yt-dlp", "ytdlp": "yt-dlp"}
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in BACKEND_CHOICES:
+        choices = ", ".join(BACKEND_CHOICES)
+        raise ValueError(f"backend must be one of: {choices}")
+    if normalized == "auto":
+        return "yt-dlp" if is_youtube_url(url) else "streamlink"
+    return normalized
+
+
+def streamlink_stream_name(quality: str) -> str:
+    """Map the shared quality labels to Streamlink stream names."""
+
+    return {
+        "Best": "best",
+        "1080p": "1080p",
+        "720p": "720p",
+        "480p": "480p",
+        "Audio Only": "audio_only",
+    }.get(quality, "best")
+
+
+def build_streamlink_command(
+    streamlink_cmd: Sequence[str],
+    url: str,
+    quality: str,
+) -> list[str]:
+    """Build a Streamlink stdout command for one bounded FFmpeg capture."""
+
+    return [
+        *streamlink_cmd,
+        "--stdout",
+        "--retry-open",
+        "3",
+        "--retry-streams",
+        "3",
+        url,
+        streamlink_stream_name(quality),
+    ]
+
+
+def build_streamlink_mux_command(
+    ffmpeg_path: str,
+    output_path: str | os.PathLike[str],
+    quality: str,
+    duration_seconds: int,
+) -> list[str]:
+    """Build the FFmpeg side of the Streamlink-to-file capture pipe."""
+
+    command = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        "pipe:0",
+        "-t",
+        str(max(1, int(duration_seconds))),
+    ]
+    if quality == "Audio Only":
+        command.extend(["-vn", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
+    else:
+        command.extend(
+            [
+                "-map",
+                "0:v:0?",
+                "-map",
+                "0:a:0?",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-movflags",
+                "+faststart",
+            ]
+        )
+    command.append(os.fspath(output_path))
+    return command
 
 
 def build_capture_command(
