@@ -103,17 +103,19 @@ sudo apt install ffmpeg
 
 ### JavaScript Runtime (Recommended)
 
-Recent versions of yt-dlp recommend a JavaScript runtime for YouTube extraction. Install **deno** for best results:
+Recent versions of yt-dlp recommend a JavaScript runtime for YouTube extraction. Install **deno** for best results, through a package manager rather than a piped install script:
 
 **Windows:**
 ```powershell
-irm https://deno.land/install.ps1 | iex
+winget install --id DenoLand.Deno -e
 ```
 
-**macOS/Linux:**
+**macOS:**
 ```bash
-curl -fsSL https://deno.land/install.sh | sh
+brew install deno
 ```
+
+**Other platforms:** see the [official Deno install instructions](https://docs.deno.com/runtime/getting_started/installation/).
 
 Without a JS runtime, yt-dlp may display a warning and some formats could be unavailable.
 

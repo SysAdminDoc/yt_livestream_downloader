@@ -2,6 +2,10 @@
 
 All notable changes to yt_livestream_downloader will be documented in this file.
 
+## Unreleased
+
+- Changed: the README's Deno install step now points to `winget install --id DenoLand.Deno -e` (Windows) and `brew install deno` (macOS), with a link to Deno's own instructions for other platforms, instead of piping `deno.land/install.ps1` or `install.sh` into a shell. No version bump: the app itself didn't change, and bumping it here would need a matching rebuild of the packaged Windows exe plus its WinGet and Scoop manifests.
+
 ## [v1.1.0] - 2026-08-03
 
 - Added: overlap-aware segment capture with a two-writer pre-arm and clean boundary trim.
